@@ -91,7 +91,9 @@ def load_kformers(args, backbone_config_class, k_config_class, backbone_model_cl
         #     print(k)
 
         # for k, v in knowledge_model_dict.items():
-        #     print(k)
+        #     # print(k)
+        #     if k == 'distilbert.embeddings.word_embeddings.weight':
+        #         print(v[10000][: 20])
 
         news_kformers_state_dict = OrderedDict()
         for key, value in backbone_model_dict.items():
@@ -142,12 +144,13 @@ def load_kformers(args, backbone_config_class, k_config_class, backbone_model_cl
         #     # print(k, v.size())
         #     print(k)
         # 在这里设置K-module的参数更新不更新
-        if not args.update_K_module:
-            for k, v in news_kformers_state_dict.items():
-                if 'k_' in k:
-                    v.requires_grad = False
+        # if not args.update_K_module:
+        #     for k, v in news_kformers_state_dict.items():
+        #         if 'k_' in k:
+        #             v.requires_grad = False
         state_dict.update(news_kformers_state_dict)
         kformers_model.load_state_dict(state_dict=state_dict)
+        print('==>', state_dict['kformers.k_embeddings.word_embeddings.weight'][10000][: 20])
     return kformers_model
 
 

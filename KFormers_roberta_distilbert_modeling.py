@@ -173,6 +173,7 @@ class KFormersModel(nn.Module):
         self.embeddings = BackboneEmbeddings(config)
         self.k_embeddings = KEmbeddings(config_k)
         self.encoder = KFormersEncoder(config, config_k, backbone_knowledge_dict)
+        # print('model', self.embeddings.word_embeddings.weight.data[10000][: 20])
 
         if not config.add_pooling_layer:
             self.pooler = BackbonePooler(config)
@@ -201,6 +202,7 @@ class KFormersModel(nn.Module):
         if k_input_ids_list is not None:
             batch, neighbour_num, description_len = k_input_ids_list.size()
             k_embedding_output = self.k_embeddings(input_ids=k_input_ids_list.reshape(-1, description_len))  # distilBert没有position和segment
+            print('model', self.k_embeddings.word_embeddings.weight.data[10000][: 20])
         else:
             k_embedding_output = None
         encoder_outputs = self.encoder(hidden_states=embedding_output, attention_mask=extended_attention_mask,

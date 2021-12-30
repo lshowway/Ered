@@ -39,6 +39,9 @@ def parse_args():
     # parser.add_argument("--config_name_k", default="", type=str, )
     # parser.add_argument("--vocab_path_k", default="", type=str)
 
+    # parser.add_argument("--backbone_knowledge_dict", default={0:0, 1:0, 2:0, 3:0, 4:1, 5:1, 6:1, 7:1,
+    #                                                           8:2, 9:2, 10:2, 11:2, 12:3, 13:3, 14:3, 15:3,
+    #                                                           16:4, 17:4, 18:4, 19:4, 20:5, 21:5, 22:5, 23:5}, type=dict)
     parser.add_argument("--backbone_knowledge_dict", default={0: 0, 1: 0, 3: 1, 5: 2, 7: 3, 9: 4, 11: 5}, type=dict)
     # parser.add_argument("--backbone_knowledge_dict", default={0: 0, 2: 1, 4: 2, 6: 3, 8: 4, 10: 5}, type=dict)
     # parser.add_argument("--backbone_knowledge_dict", default={6: 0, 7: 1, 8: 2, 9: 3, 10: 4, 11: 5}, type=dict)
