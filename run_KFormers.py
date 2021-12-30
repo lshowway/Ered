@@ -19,9 +19,10 @@ from transformers.models.roberta.tokenization_roberta_fast import RobertaTokeniz
 
 from transformers.optimization import AdamW, get_linear_schedule_with_warmup
 
-from KFormers_roberta_distilbert_modeling import KFormersRobertaForOpenEntity # KFormersRobertaForFiger  # KFormersRobertaForEntityTyping
+from KFormers_roberta_distilbert_modeling import KFormersRobertaForFiger, KFormersRobertaForOpenEntity
 from parameters import parse_args
 from utils import compute_metrics
+from data_utils import output_modes
 
 logger = logging.getLogger(__name__)
 
@@ -59,11 +60,14 @@ def load_kformers(args, backbone_config_class, k_config_class, backbone_model_cl
     config_k = k_config_class.from_pretrained(args.knowledge_model_name_or_path,
                                               output_hidden_states=True)  # 这是DistillBert的config
 
-    # kformers_model = KFormersRobertaForEntityTyping(config=config_backbone, config_k=config_k,
-    #                                                 backbone_knowledge_dict=args.backbone_knowledge_dict)
-
-    kformers_model = KFormersRobertaForOpenEntity(config=config_backbone, config_k=config_k,
-                                                    backbone_knowledge_dict=args.backbone_knowledge_dict)
+    if args.task_name == 'figer':
+        kformers_model = KFormersRobertaForFiger(config=config_backbone, config_k=config_k,
+                                                 backbone_knowledge_dict=args.backbone_knowledge_dict)
+    elif args.task_name == 'open_entity':
+        kformers_model = KFormersRobertaForOpenEntity(config=config_backbone, config_k=config_k,
+                                                      backbone_knowledge_dict=args.backbone_knowledge_dict)
+    else:
+        kformers_model = None
     # Load or initialize parameters.
     load_parameters = "pretrained"
     if load_parameters == "initialization":
@@ -135,7 +139,8 @@ def load_kformers(args, backbone_config_class, k_config_class, backbone_model_cl
                 news_kformers_state_dict[key] = value
 
         # for k, v in news_kformers_state_dict.items():
-        #     print(k, v.size())
+        #     # print(k, v.size())
+        #     print(k)
         # 在这里设置K-module的参数更新不更新
         if not args.update_K_module:
             for k, v in news_kformers_state_dict.items():
@@ -189,15 +194,15 @@ def do_train(args, model, train_dataset, val_dataset, test_dataset=None):
                                                           find_unused_parameters=True)
 
     # Train!
-    logger.warning("***** Running training *****")
-    logger.warning("  Num examples = %d", len(train_dataloader) * args.total_batch_size)
-    logger.warning("  Num Epochs = %d", args.epochs)
-    logger.warning("  Instantaneous batch size per GPU = %d", args.train_batch_size)
-    logger.warning("  Number of GPU = %d", args.n_gpu)
-    logger.warning("  Gradient Accumulation steps = %d", args.gradient_accumulation_steps)
-    logger.warning("  Total train batch size (w. parallel, distributed & accumulation) = %d",
-                   args.train_batch_size * args.gradient_accumulation_steps * args.n_gpu)
-    logger.warning("  Total optimization steps = %d", t_total)
+    logger.info("***** Running training *****")
+    logger.info("  Num examples = %d", len(train_dataloader) * args.total_batch_size)
+    logger.info("  Num Epochs = %d", args.epochs)
+    logger.info("  Instantaneous batch size per GPU = %d", args.train_batch_size)
+    logger.info("  Number of GPU = %d", args.n_gpu)
+    logger.info("  Gradient Accumulation steps = %d", args.gradient_accumulation_steps)
+    logger.info("  Total train batch size (w. parallel, distributed & accumulation) = %d",
+                args.train_batch_size * args.gradient_accumulation_steps * args.n_gpu)
+    logger.info("  Total optimization steps = %d", t_total)
 
     global_step = 0
     train_iterator = trange(args.epochs, desc="Epoch", disable=args.local_rank not in [-1, 0])
@@ -217,7 +222,8 @@ def do_train(args, model, train_dataset, val_dataset, test_dataset=None):
                           "attention_mask": batch[1],
                           "token_type_ids": batch[2] if args.backbone_model_type in ['bert', 'unilm'] else None,
                           "start_id": batch[3],
-                          "k_input_ids_list": batch[-4],
+                          "k_input_ids_list": batch[-5],
+                          "k_mask": batch[-4],
                           "k_attention_mask_list": batch[-3],
                           "k_token_type_ids_list": batch[-2] if args.knowledge_model_type in ['distilbert'] else None,
                           "label": batch[-1],
@@ -228,6 +234,7 @@ def do_train(args, model, train_dataset, val_dataset, test_dataset=None):
                           "token_type_ids": batch[2],
                           "start_id": batch[3],
                           "k_input_ids_list": None,
+                          "k_mask": None,
                           "k_attention_mask_list": None,
                           "k_token_type_ids_list": None,
                           "label": batch[-1],
@@ -251,19 +258,20 @@ def do_train(args, model, train_dataset, val_dataset, test_dataset=None):
                 model.zero_grad()
                 global_step += 1
             if args.local_rank in [-1, 0] and global_step % 100 == 0:
-                logger.warning(
+                logger.info(
                     "epoch {}, step {}, global_step {}, train_loss: {:.5f}".format(epoch, step + 1, global_step, loss))
             if args.local_rank in [-1,
                                    0] and args.eval_steps > 0 and global_step > 0 and global_step % args.eval_steps == 0:
                 eval_results = do_eval(model, args, val_dataset, global_step)
                 test_results = do_eval(model, args, test_dataset, global_step)
-                if eval_results["f1"] > best_dev_result:
-                    best_dev_result = eval_results["f1"]
-                    logger.warning('eval results, global step: {}, results: {}**'.format(global_step, eval_results))
-                    logger.warning('test results, global step: {}, results: {}'.format(global_step, test_results))
+                if eval_results['micro F1'][-1] > best_dev_result:  # f1
+                    best_dev_result = eval_results['micro F1'][-1]
+                    logger.info(
+                        'epoch: {}, global step: {}, dev results: {}**'.format(epoch, global_step, eval_results))
+                    logger.info('epoch: {}, global step: {}, test results: {}'.format(epoch, global_step, test_results))
                 else:
-                    logger.warning('eval results, global step: {}, results: {}'.format(global_step, eval_results))
-                    logger.warning('test results, global step: {}, results: {}'.format(global_step, test_results))
+                    logger.info('epoch: {}, global step: {}, dev results: {}'.format(epoch, global_step, eval_results))
+                    logger.info('epoch: {}, global step: {}, test results: {}'.format(epoch, global_step, test_results))
             if 0 < args.max_steps < global_step:
                 epoch_iterator.close()
                 break
@@ -272,13 +280,13 @@ def do_train(args, model, train_dataset, val_dataset, test_dataset=None):
         if args.local_rank in [-1, 0]:
             eval_results = do_eval(model, args, val_dataset, global_step=epoch)
             test_results = do_eval(model, args, test_dataset, global_step=epoch)
-            if eval_results["f1"] > best_dev_result:  # f1
-                best_dev_result = eval_results["f1"]
-                logger.warning('epoch: {}, global step: {}, results: {}**'.format(epoch, global_step, eval_results))
-                logger.warning('epoch: {}, global step: {}, results: {}'.format(epoch, global_step, test_results))
+            if eval_results['micro F1'][-1] > best_dev_result:  # f1
+                best_dev_result = eval_results['micro F1'][-1]
+                logger.info('epoch: {}, global step: {}, dev results: {}**'.format(epoch, global_step, eval_results))
+                logger.info('epoch: {}, global step: {}, test results: {}'.format(epoch, global_step, test_results))
             else:
-                logger.warning('epoch: {}, global step: {}, results: {}'.format(epoch, global_step, eval_results))
-                logger.warning('epoch: {}, global step: {}, results: {}'.format(epoch, global_step, test_results))
+                logger.info('epoch: {}, global step: {}, dev results: {}'.format(epoch, global_step, eval_results))
+                logger.info('epoch: {}, global step: {}, test results: {}'.format(epoch, global_step, test_results))
 
         if 0 < args.max_steps < global_step:
             train_iterator.close()
@@ -305,7 +313,8 @@ def do_eval(model, args, val_dataset, global_step):
                           "attention_mask": batch[1],
                           "token_type_ids": batch[2] if args.backbone_model_type in ['bert', 'unilm'] else None,
                           "start_id": batch[3],
-                          "k_input_ids_list": batch[-4],
+                          "k_input_ids_list": batch[-5],
+                          "k_mask": batch[-4],
                           "k_attention_mask_list": batch[-3],
                           "k_token_type_ids_list": batch[-2] if args.knowledge_model_type in ['distilbert'] else None,
                           "label": None,
@@ -316,6 +325,7 @@ def do_eval(model, args, val_dataset, global_step):
                           "token_type_ids": batch[2],
                           "start_id": batch[3],
                           "k_input_ids_list": None,
+                          "k_mask": None,
                           "k_attention_mask_list": None,
                           "k_token_type_ids_list": None,
                           "label": None,
@@ -328,12 +338,12 @@ def do_eval(model, args, val_dataset, global_step):
                 preds = np.append(preds, logits.detach().cpu().numpy(), axis=0)
                 out_label_ids = np.append(out_label_ids, label.detach().cpu().numpy(), axis=0)
 
-    if args.task_name == 'open_entity':
+    if args.task_name in ['open_entity']:
         pass
-    elif args.output_mode == "classification":
-        preds = np.argmax(preds, axis=1)
-    elif args.output_mode == "regression":
-        preds = np.squeeze(preds)
+    # elif args.output_mode == "classification":
+    #     preds = np.argmax(preds, axis=1)
+    # elif args.output_mode == "regression":
+    #     preds = np.squeeze(preds)
 
     result = compute_metrics(args.task_name, preds, out_label_ids)
     return result
@@ -349,8 +359,6 @@ def set_seed(args):
 
 def main():
     args = parse_args()
-    from data_utils import output_modes
-    args.output_mode = output_modes[args.task_name]
 
     # Setup CUDA, GPU & distributed training
     if args.local_rank == -1:
@@ -366,9 +374,10 @@ def main():
     # Setup logging
     logging.basicConfig(format='%(asctime)s - %(levelname)s - %(name)s -   %(message)s',
                         datefmt='%m/%d/%Y %H:%M:%S',
-                        level=logging.INFO if args.local_rank in [-1, 0] else logging.WARN)
-    logger.warning("Process rank: %s, device: %s, n_gpu: %s, distributed training: %s, 16-bits training: %s",
-                   args.local_rank, device, args.n_gpu, bool(args.local_rank != -1), args.fp16)
+                        level=logging.DEBUG if args.local_rank in [-1, 0] else logging.DEBUG)
+    logging.getLogger().setLevel(logging.INFO)
+    logger.info("Process rank: %s, device: %s, n_gpu: %s, distributed training: %s, 16-bits training: %s",
+                args.local_rank, device, args.n_gpu, bool(args.local_rank != -1), args.fp16)
     # Set seed
     set_seed(args)
 
@@ -390,15 +399,16 @@ def main():
     # label_list = processor.get_labels()
     # num_labels = len(label_list)
     # args.num_labels = num_labels
+    args.output_mode = output_modes[args.task_name]
 
     model = load_kformers(args, backbone_config_class, k_config_class, backbone_model_class, k_model_class)
     if args.local_rank == 0:
         torch.distributed.barrier()  # Make sure only the first process in distributed training will download model & vocab
-    logging.warning('loading backbone model: {}, knowledge module model: {}'.format(args.backbone_model_type,
-                                                                                    args.knowledge_model_type))
+    logging.info('loading backbone model: {}, knowledge module model: {}'.format(args.backbone_model_type,
+                                                                                 args.knowledge_model_type))
     model.to(device)
 
-    logger.warning("Training/evaluation parameters %s", args)
+    logger.info("Training/evaluation parameters %s", args)
     # ## Training
     if args.mode == 'train':
         from data_utils import load_and_cache_examples

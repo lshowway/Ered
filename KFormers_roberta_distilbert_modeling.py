@@ -58,43 +58,52 @@ class GNN(nn.Module):
 
     def forward(self, hidden_states, k_hidden_states=None, attention_mask=None, rel_pos=None):
         if self.config_k is not None:
+            # 处理original input text的表征
+            # 第一种： 使用CLS的表征
             # center_states = hidden_states[:, :1, :]  # batch, 1, d=1024
-            center_states = hidden_states  # batch, L1, d
+            # 第二种：全部token的表征都使用
+            center_states = hidden_states  # batch, L1, d1
             L1 = hidden_states.size(1)
-            knowledge_states = torch.cat([x[:, :1, :] for x in k_hidden_states], dim=1)  # batch, K, d=768
-            # K = knowledge_states.size(1)
-            knowledge_states = self.projection(knowledge_states)  # batch, K, d=1024
-            center_knowledge_states = torch.cat([center_states, knowledge_states], dim=1)  # batch, L1+K, d
 
-            batch, L, d = center_knowledge_states.size()
+            # 处理N条description的表征
+            # 第一种使用CLS的表征
+            # knowledge_states = k_hidden_states  # # batch, N, L2, d2=768
+            batch, neighbour_num, description_len, d2 = k_hidden_states.size()
+            knowledge_states = k_hidden_states[:, :, 0, :]  # batch, N, d2=768
+            knowledge_states = self.projection(knowledge_states)  # batch, N, d1=1024
+
+            # 将original input text的表征和description的表征合起来
+            center_knowledge_states = torch.cat([center_states, knowledge_states], dim=1)  # batch, L1+N, d1
+
             # 这个attention_mask是center和neighbour之间是否可见，也可以不加，默认就是互相可见
-            attention_mask = torch.ones(batch, L).unsqueeze(1).unsqueeze(1).to(
-                hidden_states.device)  # batch, 1, 1, L1+K
+            # attention_mask = torch.ones(batch, L).unsqueeze(1).unsqueeze(1).to(hidden_states.device)  # batch, 1, 1, L1+K
 
             # query = self.query(center_knowledge_states[:, :1])  # batch, 1, d
-            query = self.query(center_knowledge_states)  # batch, L1+K, d
-            key = self.key(center_knowledge_states)  # batch, L1+K, d
-            value = self.value(center_knowledge_states)  # batch, L1+K, d
+            query = self.query(center_knowledge_states)  # batch, L1+N, d1
+            key = self.key(center_knowledge_states)  # batch, L1+N, d1
+            value = self.value(center_knowledge_states)  # batch, L1+N, d1
 
-            query = self.transpose_for_scores(query)  # batch, d1, L1+K, d2
-            key = self.transpose_for_scores(key)  # batch, d1, L1+K, d2
-            value = self.transpose_for_scores(value)  # batch, d1, L1+K, d2
+            query = self.transpose_for_scores(query)  # batch, d3, L1+K, d4
+            key = self.transpose_for_scores(key)   # batch, d3, L1+K, d4
+            value = self.transpose_for_scores(value)  # batch, d3, L1+K, d4
 
-            attention_scores = torch.matmul(query, key.transpose(-1, -2))  # batch, d1, 1, L1+K
+            attention_scores = torch.matmul(query, key.transpose(-1, -2))  # batch, d3, 1, L1+N
             attention_scores = attention_scores / math.sqrt(self.attention_head_size)
-            if attention_mask is not None:
-                attention_scores = attention_scores + attention_mask  # batch, d1, 1, L1+K
-            attention_probs = nn.Softmax(dim=-1)(attention_scores)  # batch, d1, 1, L1+K
+            # if attention_mask is not None:
+            #     attention_scores = attention_scores + attention_mask  # batch, d3, 1, L1+N
+            attention_probs = nn.Softmax(dim=-1)(attention_scores)  # batch, d3, 1, L1+N
 
             attention_probs = self.dropout(attention_probs)
-            context_layer = torch.matmul(attention_probs, value)  # batch, d1, L1+K, d2
+            context_layer = torch.matmul(attention_probs, value)  # batch, d3, L1+N, d4
 
             context_layer = context_layer.permute(0, 2, 1, 3).contiguous()
             new_context_layer_shape = context_layer.size()[:-2] + (self.all_head_size,)
-            context_layer = context_layer.view(*new_context_layer_shape)  # batch, L1+K, d(d1*d2)
+            context_layer = context_layer.view(*new_context_layer_shape)  # batch, L1+N, d1(d3*d4)
 
-            hidden_states[:, 0, :] = context_layer[:, 0, :]  # 将CLS位替换掉 batch L1+K, d
-            #### hidden_states = context_layer[:, :L1, :].to(dtype=hidden_states.dtype)  # 被neighbour全面影响的hidden_States，感觉这个的效果应该最好
+            # 使用受description影响后的original text的表征
+            hidden_states[:, -1, :] = context_layer[:, 0, :]  # 替换掉 batch L1, d1
+            # 被neighbour全面影响的hidden_States，感觉这个的效果应该最好 (不收敛)
+            # hidden_states = context_layer[:, :L1, :].to(dtype=hidden_states.dtype)
 
             return hidden_states  # batch, d
         else:
@@ -108,8 +117,9 @@ class KFormersLayer(nn.Module):
         if config_k is not None:
             self.backbone_layer = BackboneLayer(config)  # 处理qk pair的backbone module，分类
             self.k_layer = KnowledgeLayer(config_k)  # 处理description的knowledge module，表示
-            for p in self.k_layer.parameters():
-                p.requires_grad = False
+            # 在这儿禁止参数更新，但是embedding还是更新的，所以不如在最外面设置参数。
+            # for p in self.k_layer.parameters():
+            #     p.requires_grad = False
         else:
             self.backbone_layer = BackboneLayer(config)  # 处理qk pair的backbone module，分类
             self.k_layer = None
@@ -119,14 +129,13 @@ class KFormersLayer(nn.Module):
                 k_hidden_states_list=None, k_attention_mask_list=None):
         layer_outputs = self.backbone_layer(hidden_states=hidden_states, attention_mask=attention_mask)
         hidden_states = layer_outputs[0]  # batch L d
-        if self.k_layer is not None and k_hidden_states_list:  # 现在先测试baseline没问题，之后用上面一行
-            k_output_list = []
-            for (k_hidden_states, k_attention_mask) in zip(k_hidden_states_list, k_attention_mask_list):
-                k_layer_outputs = self.k_layer(x=k_hidden_states, attn_mask=k_attention_mask)
-                k_hidden_states = k_layer_outputs[0]
-                k_output_list.append(k_hidden_states)
-            hidden_states = self.gnn(hidden_states, k_output_list)  # 这里对batch 0 d进行处理，使用neighbour的cls位？
-            return hidden_states, k_output_list
+        if self.k_layer is not None and k_hidden_states_list is not None:  # 现在先测试baseline没问题，之后用上面一行
+            k_layer_outputs = self.k_layer(x=k_hidden_states_list, attn_mask=k_attention_mask_list)
+            k_layer_outputs = k_layer_outputs[0]
+            batch, neighbour_num, description_len = k_attention_mask_list.size()
+            k_layer_outputs = k_layer_outputs.reshape(batch, neighbour_num, description_len, -1)  # batch, N, L2, d2
+            hidden_states = self.gnn(hidden_states, k_layer_outputs)  # 这里对batch 0 d进行处理，使用neighbour的cls位？
+            return hidden_states, k_layer_outputs.reshape(batch*neighbour_num, description_len, -1)
         else:
             return hidden_states, k_hidden_states_list
 
@@ -158,8 +167,6 @@ class KFormersEncoder(nn.Module):
 
 
 class KFormersModel(nn.Module):
-    # class KFormersModel(TuringNLRv3PreTrainedModel):
-    # knowledge module, small model, two tower, representation model
     def __init__(self, config, config_k, backbone_knowledge_dict):
         super(KFormersModel, self).__init__()
         self.config = config
@@ -173,29 +180,13 @@ class KFormersModel(nn.Module):
             self.pooler = None
 
     def get_extended_attention_mask(self, attention_mask, input_shape):
-        # We can provide a self-attention mask of dimensions [batch_size, from_seq_length, to_seq_length]
-        # ourselves in which case we just need to make it broadcastable to all heads.
         if attention_mask.dim() == 3:
             extended_attention_mask = attention_mask[:, None, :, :]
         elif attention_mask.dim() == 2:
-            # Provided a padding mask of dimensions [batch_size, seq_length]
-            # - if the model is a decoder, apply a causal mask in addition to the padding mask
-            # - if the model is an encoder, make the mask broadcastable to [batch_size, num_heads, seq_length, seq_length]
             extended_attention_mask = attention_mask[:, None, None, :]
         else:
-            raise ValueError(
-                "Wrong shape for input_ids (shape {}) or attention_mask (shape {})".format(
-                    input_shape, attention_mask.shape
-                )
-            )
-
-        # Since attention_mask is 1.0 for positions we want to attend and 0.0 for
-        # masked positions, this operation will create a tensor which is 0.0 for
-        # positions we want to attend and -10000.0 for masked positions.
-        # Since we are adding it to the raw scores before the softmax, this is
-        # effectively the same as removing these entirely.
-        # extended_attention_mask = extended_attention_mask.to(dtype=self.dtype)  # fp16 compatibility
-        # extended_attention_mask = extended_attention_mask.to(dtype=next(self.parameters()).dtype) # fp16 compatibility
+            raise ValueError("Wrong shape for input_ids (shape {}) or attention_mask (shape {})".format(
+                    input_shape, attention_mask.shape))
         extended_attention_mask = extended_attention_mask.to(dtype=attention_mask.dtype)  # fp16 compatibility
         extended_attention_mask = (1.0 - extended_attention_mask) * -10000.0
         return extended_attention_mask
@@ -208,157 +199,19 @@ class KFormersModel(nn.Module):
                                            token_type_ids=token_type_ids)
 
         if k_input_ids_list is not None:
-            k_input_ids_list = torch.unbind(k_input_ids_list, dim=1)
-            k_attention_mask_list = torch.unbind(k_attention_mask_list, dim=1)
-            k_embedding_output_list = []
-            k_extended_attention_mask_list = []
-            for (k_ids, k_mask) in zip(k_input_ids_list, k_attention_mask_list):
-                k_extended_mask = self.get_extended_attention_mask(k_mask, input_shape=k_ids.size())
-                k_extended_attention_mask_list.append(k_extended_mask)
-                k_embedding_output = self.k_embeddings(input_ids=k_ids)  # distilBert没有position和segment
-                k_embedding_output_list.append(k_embedding_output)
+            batch, neighbour_num, description_len = k_input_ids_list.size()
+            k_embedding_output = self.k_embeddings(input_ids=k_input_ids_list.reshape(-1, description_len))  # distilBert没有position和segment
         else:
-            k_embedding_output_list = None
-            k_extended_attention_mask_list = None
+            k_embedding_output = None
         encoder_outputs = self.encoder(hidden_states=embedding_output, attention_mask=extended_attention_mask,
-                                       k_hidden_states_list=k_embedding_output_list,
-                                       k_attention_mask_list=k_extended_attention_mask_list)  # batch L d
-        sequence_output = encoder_outputs[0]  # batch L d
-
-        outputs = (sequence_output,) + encoder_outputs[1:]  # add hidden_states and attentions if they are here
+                                       k_hidden_states_list=k_embedding_output,
+                                       k_attention_mask_list=k_attention_mask_list)  # batch L d
+        original_text_output, description_output = encoder_outputs
         if self.pooler is None:
-            return outputs  # sequence_output, pooled_output, (hidden_states), (attentions)
+            return encoder_outputs  # original_text_output, description_output
         else:
-            pooled_output = self.pooler(sequence_output)
-            return (sequence_output, pooled_output) + encoder_outputs[1:]
-
-
-# class KFormersForDownstreamTask(BackbonePreTrainedModel):  # 这个不能继承一个类吧？两个？
-#     # 第一种实现方式：每一层，在Layer位置两个module都是结合的，组成一个新的层
-#     # 第二种实现方式：在Encoder位置处理每一层
-#     def __init__(self, config, config_k, backbone_knowledge_dict):
-#         super(KFormersForDownstreamTask, self).__init__(config)
-#         self.num_labels = config.num_labels
-#         config.add_pooling_layer = False
-#
-#         self.kformers = KFormersModel(config, config_k, backbone_knowledge_dict)
-#         self.dropout = nn.Dropout(config.hidden_dropout_prob)
-#         self.classifier = nn.Linear(config.hidden_size, config.num_labels)
-#
-#         self.loss = nn.CrossEntropyLoss(reduction='mean', ignore_index=-100)
-#         self.init_weights()
-#
-#     def forward(self, input_ids=None, attention_mask=None, token_type_ids=None, position_ids=None, \
-#                 k_input_ids_list=None, k_attention_mask_list=None,
-#                 k_token_type_ids_list=None, k_position_ids=None, label=None):
-#         # 输入增加了description的，也就是knowledge的，这个信息是一个list，因为里面可能包括多个description
-#         # k_position_ids不同的neighbour，他们的长度是固定的，position_ids也就是固定的。
-#
-#         outputs = self.kformers(input_ids=input_ids, attention_mask=attention_mask,
-#                                 token_type_ids=token_type_ids, position_ids=position_ids,
-#                                 k_input_ids_list=k_input_ids_list, k_attention_mask_list=k_attention_mask_list,
-#                                 k_token_type_ids_list=k_token_type_ids_list, k_position_ids=k_position_ids)
-#
-#         pooled_output = outputs[1]  # CLS位的表征
-#         pooled_output = self.dropout(pooled_output)  # 加dropout
-#         logits = self.classifier(pooled_output)  # 分类
-#         if label is not None:
-#             loss = self.loss(logits, label)  # 需要输入
-#             return logits, loss
-#         else:
-#             return logits
-
-
-# class KFormersForEntityTyping(BackbonePreTrainedModel):  # 这个不能继承一个类吧？两个？
-#     # 第一种实现方式：每一层，在Layer位置两个module都是结合的，组成一个新的层
-#     # 第二种实现方式：在Encoder位置处理每一层
-#     def __init__(self, config, config_k, backbone_knowledge_dict):
-#         super(KFormersForEntityTyping, self).__init__(config)
-#         self.num_labels = 9
-#         config.add_pooling_layer = False
-#
-#         self.kformers = KFormersModel(config, config_k, backbone_knowledge_dict)
-#         self.dropout = nn.Dropout(config.hidden_dropout_prob)
-#         self.classifier = nn.Linear(config.hidden_size, self.num_labels)
-#
-#         self.loss = nn.BCEWithLogitsLoss(reduction='mean')
-#         self.init_weights()
-#
-#     def forward(self, input_ids=None, attention_mask=None, token_type_ids=None, position_ids=None, \
-#                 k_input_ids_list=None, k_attention_mask_list=None,
-#                 k_token_type_ids_list=None, k_position_ids=None, label=None):
-#         # 输入增加了description的，也就是knowledge的，这个信息是一个list，因为里面可能包括多个description
-#         # k_position_ids不同的neighbour，他们的长度是固定的，position_ids也就是固定的。
-#
-#         outputs = self.kformers(input_ids=input_ids, attention_mask=attention_mask,
-#                                 token_type_ids=token_type_ids, position_ids=position_ids,
-#                                 k_input_ids_list=k_input_ids_list, k_attention_mask_list=k_attention_mask_list,
-#                                 k_token_type_ids_list=k_token_type_ids_list, k_position_ids=k_position_ids)
-#
-#         pooled_output = outputs[1]  # CLS位的表征
-#         pooled_output = self.dropout(pooled_output)  # 加dropout
-#         logits = self.classifier(pooled_output)  # 分类
-#         if label is not None:
-#             loss = self.loss(logits.view(-1, self.num_labels), label.view(-1, self.num_labels))
-#             return logits, loss
-#         else:
-#             return logits
-
-
-# class RobertaForSequenceClassification(RobertaPreTrainedModel):
-#     _keys_to_ignore_on_load_missing = [r"position_ids"]
-#     def __init__(self, config):
-#         super().__init__(config)
-#         self.num_labels = config.num_labels
-#         self.roberta = RobertaModel(config, add_pooling_layer=False)
-#         self.classifier = RobertaClassificationHead(config)
-#         self.init_weights()
-#
-#     def forward(self, input_ids=None, attention_mask=None, token_type_ids=None, position_ids=None,
-#         head_mask=None, inputs_embeds=None, labels=None, output_attentions=None, output_hidden_states=None,
-#         return_dict=None,):
-#         r"""
-#         labels (:obj:`torch.LongTensor` of shape :obj:`(batch_size,)`, `optional`):
-#             Labels for computing the sequence classification/regression loss. Indices should be in :obj:`[0, ...,
-#             config.num_labels - 1]`. If :obj:`config.num_labels == 1` a regression loss is computed (Mean-Square loss),
-#             If :obj:`config.num_labels > 1` a classification loss is computed (Cross-Entropy).
-#         """
-#         return_dict = return_dict if return_dict is not None else self.config.use_return_dict
-#
-#         outputs = self.roberta(
-#             input_ids,
-#             attention_mask=attention_mask,
-#             token_type_ids=token_type_ids,
-#             position_ids=position_ids,
-#             head_mask=head_mask,
-#             inputs_embeds=inputs_embeds,
-#             output_attentions=output_attentions,
-#             output_hidden_states=output_hidden_states,
-#             return_dict=return_dict,
-#         )
-#         sequence_output = outputs[0]
-#         logits = self.classifier(sequence_output)
-#
-#         loss = None
-#         if labels is not None:
-#             if self.num_labels == 1:
-#                 #  We are doing regression
-#                 loss_fct = MSELoss()
-#                 loss = loss_fct(logits.view(-1), labels.view(-1))
-#             else:
-#                 loss_fct = CrossEntropyLoss()
-#                 loss = loss_fct(logits.view(-1, self.num_labels), labels.view(-1))
-#
-#         if not return_dict:
-#             output = (logits,) + outputs[2:]
-#             return ((loss,) + output) if loss is not None else output
-#
-#         return SequenceClassifierOutput(
-#             loss=loss,
-#             logits=logits,
-#             hidden_states=outputs.hidden_states,
-#             attentions=outputs.attentions,
-#         )
+            pooled_output = self.pooler(original_text_output)
+            return (original_text_output, pooled_output, description_output)
 
 
 class RobertaClassification(nn.Module):
@@ -382,8 +235,6 @@ class RobertaClassification(nn.Module):
 
 
 class KFormersRobertaForOpenEntity(BackbonePreTrainedModel):  # 这个不能继承一个类吧？两个？
-    # 第一种实现方式：每一层，在Layer位置两个module都是结合的，组成一个新的层
-    # 第二种实现方式：在Encoder位置处理每一层
     def __init__(self, config, config_k, backbone_knowledge_dict):
         super(KFormersRobertaForOpenEntity, self).__init__(config)
         self.num_labels = 9
@@ -397,22 +248,16 @@ class KFormersRobertaForOpenEntity(BackbonePreTrainedModel):  # 这个不能继�
         self.init_weights()
 
     def forward(self, input_ids=None, attention_mask=None, token_type_ids=None, position_ids=None, \
-                k_input_ids_list=None, k_attention_mask_list=None,
+                k_input_ids_list=None, k_mask=None, k_attention_mask_list=None,
                 k_token_type_ids_list=None, k_position_ids=None, label=None, start_id=None):
-        # 输入增加了description的，也就是knowledge的，这个信息是一个list，因为里面可能包括多个description
-        # k_position_ids不同的neighbour，他们的长度是固定的，position_ids也就是固定的。
-
         outputs = self.kformers(input_ids=input_ids, attention_mask=attention_mask,
                                 token_type_ids=token_type_ids, position_ids=position_ids,
                                 k_input_ids_list=k_input_ids_list, k_attention_mask_list=k_attention_mask_list,
                                 k_token_type_ids_list=k_token_type_ids_list, k_position_ids=k_position_ids)
-        sequence_output = outputs[0]  # batch L d
+        original_text_output = outputs[0]  # batch L d
         start_id = start_id.unsqueeze(1)  # batch 1 L
-        entity_vec = torch.bmm(start_id, sequence_output).squeeze(1)  # batch d
+        entity_vec = torch.bmm(start_id, original_text_output).squeeze(1)  # batch d
         logits = self.classifier(entity_vec)
-        # pooled_output = outputs[1]  # CLS位的表征
-        # pooled_output = self.dropout(pooled_output)  # 加dropout
-        # logits = self.classifier(pooled_output)  # 分类
         if label is not None:
             loss = self.loss(logits.view(-1, self.num_labels), label.view(-1, self.num_labels))
             return logits, loss
@@ -421,8 +266,6 @@ class KFormersRobertaForOpenEntity(BackbonePreTrainedModel):  # 这个不能继�
 
 
 class KFormersRobertaForFiger(BackbonePreTrainedModel):  # 这个不能继承一个类吧？两个？
-    # 第一种实现方式：每一层，在Layer位置两个module都是结合的，组成一个新的层
-    # 第二种实现方式：在Encoder位置处理每一层
     def __init__(self, config, config_k, backbone_knowledge_dict):
         super(KFormersRobertaForFiger, self).__init__(config)
         self.num_labels = 113
@@ -430,26 +273,22 @@ class KFormersRobertaForFiger(BackbonePreTrainedModel):  # 这个不能继承一
         config.add_pooling_layer = False
 
         self.kformers = KFormersModel(config, config_k, backbone_knowledge_dict)
-        self.classifier = RobertaClassificationHead(config)
+        self.classifier = RobertaClassification(config)
 
         self.loss = nn.BCEWithLogitsLoss(reduction='mean')
         self.init_weights()
 
     def forward(self, input_ids=None, attention_mask=None, token_type_ids=None, position_ids=None, \
-                k_input_ids_list=None, k_attention_mask_list=None,
-                k_token_type_ids_list=None, k_position_ids=None, label=None):
-        # 输入增加了description的，也就是knowledge的，这个信息是一个list，因为里面可能包括多个description
-        # k_position_ids不同的neighbour，他们的长度是固定的，position_ids也就是固定的。
-
+                k_input_ids_list=None, k_mask=None, k_attention_mask_list=None,
+                k_token_type_ids_list=None, k_position_ids=None, label=None, start_id=None):
         outputs = self.kformers(input_ids=input_ids, attention_mask=attention_mask,
                                 token_type_ids=token_type_ids, position_ids=position_ids,
                                 k_input_ids_list=k_input_ids_list, k_attention_mask_list=k_attention_mask_list,
                                 k_token_type_ids_list=k_token_type_ids_list, k_position_ids=k_position_ids)
-        sequence_output = outputs[0]
-        logits = self.classifier(sequence_output)
-        # pooled_output = outputs[1]  # CLS位的表征
-        # pooled_output = self.dropout(pooled_output)  # 加dropout
-        # logits = self.classifier(pooled_output)  # 分类
+        original_text_output = outputs[0]  # batch L d
+        start_id = start_id.unsqueeze(1)  # batch 1 L
+        entity_vec = torch.bmm(start_id, original_text_output).squeeze(1)  # batch d
+        logits = self.classifier(entity_vec)
         if label is not None:
             loss = self.loss(logits.view(-1, self.num_labels), label.view(-1, self.num_labels))
             return logits, loss

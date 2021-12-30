@@ -18,7 +18,8 @@ def parse_args():
     parser.add_argument("--weight_decay", type=float, default=0.01)
     parser.add_argument("--backbone_seq_length", type=int, default=32)
     parser.add_argument("--knowledge_seq_length", type=int, default=64)
-    parser.add_argument("--neighbor_num", type=int, default=1)
+    parser.add_argument("--max_num_entity", type=int, default=2)
+    # parser.add_argument("--neighbor_num", type=int, default=1)
 
     # model training
     parser.add_argument("--epochs", type=int, default=2)
@@ -38,10 +39,11 @@ def parse_args():
     # parser.add_argument("--config_name_k", default="", type=str, )
     # parser.add_argument("--vocab_path_k", default="", type=str)
 
-    # parser.add_argument("--backbone_knowledge_dict", default={1: 0, 3: 1, 5: 2, 7: 3, 9: 4, 11: 5}, type=dict)
+    parser.add_argument("--backbone_knowledge_dict", default={0: 0, 1: 0, 3: 1, 5: 2, 7: 3, 9: 4, 11: 5}, type=dict)
+    # parser.add_argument("--backbone_knowledge_dict", default={0: 0, 2: 1, 4: 2, 6: 3, 8: 4, 10: 5}, type=dict)
     # parser.add_argument("--backbone_knowledge_dict", default={6: 0, 7: 1, 8: 2, 9: 3, 10: 4, 11: 5}, type=dict)
-    parser.add_argument("--backbone_knowledge_dict",
-                        default={0: 0, 1: 0, 2: 1, 3: 1, 4: 2, 5: 2, 6: 3, 7: 3, 8: 4, 9: 4, 10: 5, 11: 5}, type=dict)
+    # parser.add_argument("--backbone_knowledge_dict",
+    #                     default={0: 0, 1: 0, 2: 1, 3: 1, 4: 2, 5: 2, 6: 3, 7: 3, 8: 4, 9: 4, 10: 5, 11: 5}, type=dict)
     parser.add_argument("--add_knowledge", type=utils.str2bool, default=True)
 
     parser.add_argument("--learning_rate", type=float, default=1e-5)
