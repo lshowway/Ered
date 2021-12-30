@@ -323,7 +323,7 @@ def do_eval(model, args, val_dataset, global_step):
                 preds = np.append(preds, logits.detach().cpu().numpy(), axis=0)
                 out_label_ids = np.append(out_label_ids, label.detach().cpu().numpy(), axis=0)
 
-    if args.task_name == 'entity_type':
+    if args.task_name == 'open_entity':
         pass
     elif args.output_mode == "classification":
         preds = np.argmax(preds, axis=1)
