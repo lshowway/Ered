@@ -38,10 +38,10 @@ def parse_args():
     # parser.add_argument("--config_name_k", default="", type=str, )
     # parser.add_argument("--vocab_path_k", default="", type=str)
 
-    parser.add_argument("--backbone_knowledge_dict", default={1: 0, 3: 1, 5: 2, 7: 3, 9: 4, 11: 5}, type=dict)
+    # parser.add_argument("--backbone_knowledge_dict", default={1: 0, 3: 1, 5: 2, 7: 3, 9: 4, 11: 5}, type=dict)
     # parser.add_argument("--backbone_knowledge_dict", default={6: 0, 7: 1, 8: 2, 9: 3, 10: 4, 11: 5}, type=dict)
-    # parser.add_argument("--backbone_knowledge_dict",
-    #                     default={0: 0, 1: 0, 2: 1, 3: 1, 4: 2, 5: 2, 6: 3, 7: 3, 8: 4, 9: 4, 10: 5, 11: 5}, type=dict)
+    parser.add_argument("--backbone_knowledge_dict",
+                        default={0: 0, 1: 0, 2: 1, 3: 1, 4: 2, 5: 2, 6: 3, 7: 3, 8: 4, 9: 4, 10: 5, 11: 5}, type=dict)
     parser.add_argument("--add_knowledge", type=utils.str2bool, default=True)
 
     parser.add_argument("--learning_rate", type=float, default=1e-5)
@@ -49,6 +49,7 @@ def parse_args():
 
     parser.add_argument("--local_rank", type=int, default=-1, help="For distributed training: local_rank")
     parser.add_argument("--fp16", type=utils.str2bool, default=False)
+    parser.add_argument("--update_K_module", type=utils.str2bool, default=False)
     parser.add_argument('--fp16_opt_level', type=str, default='O1',
                         help="For fp16: Apex AMP optimization level selected in ['O0', 'O1', 'O2', and 'O3']."
                              "See details at https://nvidia.github.io/apex/amp.html")

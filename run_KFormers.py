@@ -136,6 +136,11 @@ def load_kformers(args, backbone_config_class, k_config_class, backbone_model_cl
 
         # for k, v in news_kformers_state_dict.items():
         #     print(k, v.size())
+        # 在这里设置K-module的参数更新不更新
+        if not args.update_K_module:
+            for k, v in news_kformers_state_dict.items():
+                if 'k_' in k:
+                    v.requires_grad = False
         state_dict.update(news_kformers_state_dict)
         kformers_model.load_state_dict(state_dict=state_dict)
     return kformers_model
@@ -252,8 +257,8 @@ def do_train(args, model, train_dataset, val_dataset, test_dataset=None):
                                    0] and args.eval_steps > 0 and global_step > 0 and global_step % args.eval_steps == 0:
                 eval_results = do_eval(model, args, val_dataset, global_step)
                 test_results = do_eval(model, args, test_dataset, global_step)
-                if eval_results[1][-1] > best_dev_result:
-                    best_dev_result = eval_results[1][-1]
+                if eval_results["f1"] > best_dev_result:
+                    best_dev_result = eval_results["f1"]
                     logger.warning('eval results, global step: {}, results: {}**'.format(global_step, eval_results))
                     logger.warning('test results, global step: {}, results: {}'.format(global_step, test_results))
                 else:
@@ -267,8 +272,8 @@ def do_train(args, model, train_dataset, val_dataset, test_dataset=None):
         if args.local_rank in [-1, 0]:
             eval_results = do_eval(model, args, val_dataset, global_step=epoch)
             test_results = do_eval(model, args, test_dataset, global_step=epoch)
-            if eval_results[1][-1] > best_dev_result:  # f1
-                best_dev_result = eval_results[1][-1]
+            if eval_results["f1"] > best_dev_result:  # f1
+                best_dev_result = eval_results["f1"]
                 logger.warning('epoch: {}, global step: {}, results: {}**'.format(epoch, global_step, eval_results))
                 logger.warning('epoch: {}, global step: {}, results: {}'.format(epoch, global_step, test_results))
             else:

@@ -159,57 +159,32 @@ def pearson_and_spearman(preds, labels):
     }
 
 
-def entity_typing_accuracy(out, l):
-    def f1(p, r):
-        if r == 0.:
-            return 0.
-        return 2 * p * r / float(p + r)
+def entity_typing_accuracy(preds, label):
+    all_predicted_indexes = []
+    all_label_indexes = []
+    for x1, x2 in zip(preds, label):
+        all_predicted_indexes.append([i for i, v in enumerate(x1) if v > 0])
+        all_label_indexes.append([i for i, v in enumerate(x2) if v > 0])
 
-    def loose_macro(true, pred):
-        num_entities = len(true)
-        p = 0.
-        r = 0.
-        for true_labels, predicted_labels in zip(true, pred):
-            if len(predicted_labels) > 0:
-                p += len(set(predicted_labels).intersection(set(true_labels))) / float(len(predicted_labels))
-            if len(true_labels):
-                r += len(set(predicted_labels).intersection(set(true_labels))) / float(len(true_labels))
-        precision = p / num_entities
-        recall = r / num_entities
-        return precision, recall, f1(precision, recall)
+    num_predicted_labels = 0
+    num_gold_labels = 0
+    num_correct_labels = 0
+    for x1, x2 in zip(all_predicted_indexes, all_label_indexes):
+        num_predicted_labels += len(x1)
+        num_gold_labels += len(x2)
+        num_correct_labels += len(frozenset(x1).intersection(frozenset(x2)))
+    if num_predicted_labels > 0:
+        precision = num_correct_labels / num_predicted_labels
+    else:
+        precision = 0.0
 
-    def loose_micro(true, pred):
-        num_predicted_labels = 0.
-        num_true_labels = 0.
-        num_correct_labels = 0.
-        for true_labels, predicted_labels in zip(true, pred):
-            num_predicted_labels += len(predicted_labels)
-            num_true_labels += len(true_labels)
-            num_correct_labels += len(set(predicted_labels).intersection(set(true_labels)))
-        if num_predicted_labels > 0:
-            precision = num_correct_labels / num_predicted_labels
-        else:
-            precision = 0.
-        recall = num_correct_labels / num_true_labels
-        return precision, recall, f1(precision, recall)
+    recall = num_correct_labels / num_gold_labels
+    if precision + recall == 0.0:
+        f1 = 0.0
+    else:
+        f1 = 2 * precision * recall / (precision + recall)
 
-    cnt = 0
-    y1 = []
-    y2 = []
-    for x1, x2 in zip(out, l):
-        yy1 = []
-        yy2 = []
-        top = max(x1)
-        for i in range(len(x1)):
-            # if x1[i] > 0 or x1[i] == top:
-            if x1[i] > 0:
-                yy1.append(i)
-            if x2[i] > 0:
-                yy2.append(i)
-        y1.append(yy1)
-        y2.append(yy2)
-        cnt += set(yy1) == set(yy2)
-    return cnt, loose_micro(y2, y1), loose_macro(y2, y1)
+    return dict(count=num_correct_labels, precision=precision, recall=recall, f1=f1)
 
 
 def compute_metrics(task_name, preds, labels):
