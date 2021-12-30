@@ -18,15 +18,15 @@ def load_and_cache_examples(args, task, tokenizer, k_tokenizer, dataset_type, ev
         torch.distributed.barrier()  # Make sure only the first process in distributed training process the dataset, and the others will use the cache
     input_mode = input_modes[task]
     t = 1 if input_mode == 'single_sentence' else 2
-    processor = processors[task](tokenizer, k_tokenizer, args.neighbor_num * t)
+    processor = processors[task](tokenizer, k_tokenizer)
     output_mode = output_modes[task]
     # Load data features from cache or dataset file
     cached_features_file = os.path.join(args.data_dir, 'cached_{}_{}_{}_{}_{}_{}_{}_{}'.format(
         args.model_type, args.backbone_model_type, args.knowledge_model_type,
         task,
         dataset_type,
-        args.use_entity,
         str(args.backbone_seq_length),
+        str(args.max_num_entity),
         str(args.knowledge_seq_length)))
     if os.path.exists(cached_features_file):
         logger.warning("===> Loading features from cached file %s", cached_features_file)
@@ -48,7 +48,7 @@ def load_and_cache_examples(args, task, tokenizer, k_tokenizer, dataset_type, ev
                                                    output_mode, input_mode)
         elif input_mode == 'entity_sentence':
             features = convert_examples_to_features_entity_typing(examples, args.qid_file, args.backbone_seq_length,
-                                                   args.knowledge_seq_length, tokenizer, k_tokenizer,
+                                                   args.knowledge_seq_length, args.max_num_entity, tokenizer, k_tokenizer,
                                                                   output_mode, input_mode,
                                                                   cls_token_at_end=bool(args.model_type in ['xlnet']),
                                                                   # xlnet has a cls token at the end
@@ -80,6 +80,7 @@ def load_and_cache_examples(args, task, tokenizer, k_tokenizer, dataset_type, ev
         all_start_ids = torch.tensor([f.start_id for f in features], dtype=torch.float)
 
         all_input_ids_k = torch.tensor([f.k_input_ids for f in features], dtype=torch.long)
+        all_k_mask = torch.tensor([f.k_mask for f in features], dtype=torch.long)
         all_input_mask_k = torch.tensor([f.k_input_mask for f in features], dtype=torch.long)
         all_segment_ids_k = torch.tensor([f.k_segment_ids for f in features], dtype=torch.long)
 
@@ -100,7 +101,7 @@ def load_and_cache_examples(args, task, tokenizer, k_tokenizer, dataset_type, ev
         all_label_ids = features.label_id
 
     dataset = TensorDataset(all_input_ids, all_input_mask, all_segment_ids, all_start_ids,
-                            all_input_ids_k, all_input_mask_k, all_segment_ids_k,
+                            all_input_ids_k, all_k_mask, all_input_mask_k, all_segment_ids_k,
                             all_label_ids)
     return dataset
 
@@ -303,7 +304,7 @@ def convert_examples_to_features_single_sentence(examples, label_list, origin_se
     return features
 
 
-def convert_examples_to_features_entity_typing(examples, qid_file, origin_seq_length, knowledge_seq_length,
+def convert_examples_to_features_entity_typing(examples, qid_file, origin_seq_length, knowledge_seq_length, max_num_entity,
                                                tokenizer, k_tokenizer, output_mode, input_mode,
                                                cls_token_at_end=False,
                                                cls_token='[CLS]',
@@ -323,6 +324,15 @@ def convert_examples_to_features_entity_typing(examples, qid_file, origin_seq_le
         if ex_index % 10000 == 0:
             logger.info("Writing example %d of %d" % (ex_index, len(examples)))
         # ==== backbone ====
+        neighbours = [x[0] for x in example.neighbour]
+        # === 在original input text后面拼上entities
+        # NULL_entity = "NULL entity"
+        # entities = [QID_entityName_dict.get(qid, NULL_entity) for qid in neighbours]
+        # entities = entities[: max_num_entity] + ["PAD ENTITY"] * (max_num_entity - len(entities))
+        # t = ' ' + sep_token + ' '
+        # example.text_a = t.join([example.text_a] + entities)
+        # === 在original input text后面拼上entities
+
         start, end = example.text_b[0], example.text_b[1]
         sentence = example.text_a
         tokens_0_start = tokenizer.tokenize(sentence[:start])
@@ -359,6 +369,8 @@ def convert_examples_to_features_entity_typing(examples, qid_file, origin_seq_le
             raise KeyError(output_mode)
 
         start_id = np.zeros(origin_seq_length)
+        if start >= origin_seq_length:
+            start = 0  # 如果entity被截断了，就使用CLS位代替
         start_id[start] = 1
         if ex_index < 5:
             logger.info("*** Example ***")
@@ -371,10 +383,11 @@ def convert_examples_to_features_entity_typing(examples, qid_file, origin_seq_le
             logger.info("start_id: {}".format(start_id))
         # ==== backbone ====
         # ==== knowledge ====
-        neighbours = [x[0] for x in example.neighbour]
         neighbour_one, neighbour_att_mask_one, neighbour_segment_one = [], [], []
-        neighbours = [QID_description_dict.get(qid, 'NULL') for qid in neighbours]
-        neighbours = neighbours[: 1] + (1 - len(neighbours)) * ['NULL']
+        NULL_description = "The entity does not have description"
+        neighbours = [QID_description_dict.get(qid, NULL_description) for qid in neighbours]
+        neighbours_mask = [1] * min(max_num_entity, len(neighbours)) + [0] * (max_num_entity - min(max_num_entity, len(neighbours)))
+        neighbours = neighbours[: max_num_entity] + ["PAD DESCRIPTION"] * (max_num_entity - len(neighbours))
         for x in neighbours:
             x = k_tokenizer.tokenize(x)
             x = [k_tokenizer.cls_token] + x + [k_tokenizer.sep_token]
@@ -397,9 +410,11 @@ def convert_examples_to_features_entity_typing(examples, qid_file, origin_seq_le
             neighbour_one.append(x_1)
             neighbour_att_mask_one.append(x_2)
             neighbour_segment_one.append(x_3)
+        # print(len(neighbour_one))  # 如何处理多个entity，多个description
         if ex_index < 5:
             logger.info("*** Example ***")
             logger.info("tokens_k: %s" % " ".join([str(x_) for x_ in neighbours]))
+            logger.info("neighbours_mask: %s" % " ".join([str(x_) for x_ in neighbours_mask]))
             logger.info("input_ids_k: %s" % " ".join([str(x) for x in neighbour_one]))
             logger.info("input_mask_k: %s" % " ".join([str(x) for x in neighbour_att_mask_one]))
             logger.info("segment_ids_k: %s" % " ".join([str(x) for x in neighbour_segment_one]))
@@ -412,6 +427,7 @@ def convert_examples_to_features_entity_typing(examples, qid_file, origin_seq_le
                           label_id=label_id,
                           start_id=start_id,
                           k_input_ids=neighbour_one,
+                          k_mask=neighbours_mask,  # 表示有几条有效description
                           k_input_mask=neighbour_att_mask_one,
                           k_segment_ids=neighbour_segment_one,  # distilBert没有使用token_type_embedding
                           ))
@@ -421,13 +437,14 @@ def convert_examples_to_features_entity_typing(examples, qid_file, origin_seq_le
 class InputFeatures(object):
     def __init__(self, input_ids=None, input_mask=None, segment_ids=None,
                  start_id=None,
-                 k_input_ids=None, k_input_mask=None, k_segment_ids=None, label_id=None):
+                 k_input_ids=None, k_mask=None, k_input_mask=None, k_segment_ids=None, label_id=None):
         self.input_ids = input_ids
         self.input_mask = input_mask
         self.segment_ids = segment_ids
         self.start_id = start_id
 
         self.k_input_ids = k_input_ids
+        self.k_mask = k_mask
         self.k_input_mask = k_input_mask
         self.k_segment_ids = k_segment_ids
 
@@ -651,29 +668,29 @@ class OpenentityProcessor(DataProcessor):
     def __init__(self, tokenizer=None, k_tokenizer=None, description_num=None, use_entity=False):
         self.tokenizer = tokenizer
         self.k_tokenizer = k_tokenizer
-        self.neighbour_num = description_num
-        self.use_entity = use_entity
 
     def get_train_examples(self, data_dir, dataset_type=None):
         lines = self._read_json(os.path.join(data_dir, "train.json"))
-        return self._create_examples(lines, self.tokenizer, self.k_tokenizer, self.neighbour_num)
+        return self._create_examples(lines, self.tokenizer, self.k_tokenizer)
 
     def get_dev_examples(self, data_dir, dataset_type):
         lines = self._read_json(os.path.join(data_dir, "{}.json".format(dataset_type)))
-        return self._create_examples(lines, self.tokenizer, self.k_tokenizer, self.neighbour_num)
+        return self._create_examples(lines, self.tokenizer, self.k_tokenizer)
 
     def get_labels(self):
         return [0, 1]
 
-    def _create_examples(self, lines, tokenizer, k_tokenizer, neighbor_num, tokenizing_batch_size=32768):
+    def _create_examples(self, lines, tokenizer, k_tokenizer, tokenizing_batch_size=32768):
         examples = []
         label_list = ['entity', 'location', 'time', 'organization', 'object', 'event', 'place', 'person', 'group']
+        label_set = set()
         for (i, line) in enumerate(lines):
             guid = i
             text_a = line['sent']
             text_b = (line['start'], line['end'])
             label = [0 for item in range(len(label_list))]
             for item in line['labels']:
+                label_set.add(item)
                 label[label_list.index(item)] = 1
             neighbour = line['ents']
             examples.append(
@@ -685,21 +702,19 @@ class FigerProcessor(DataProcessor):
     def __init__(self, tokenizer=None, k_tokenizer=None, description_num=None, use_entity=False):
         self.tokenizer = tokenizer
         self.k_tokenizer = k_tokenizer
-        self.neighbour_num = description_num
-        self.use_entity = use_entity
 
     def get_train_examples(self, data_dir, dataset_type=None):
         lines = self._read_json(os.path.join(data_dir, "train.json"))
-        return self._create_examples(lines, self.tokenizer, self.k_tokenizer, self.neighbour_num)
+        return self._create_examples(lines, self.tokenizer, self.k_tokenizer)
 
     def get_dev_examples(self, data_dir, dataset_type):
         lines = self._read_json(os.path.join(data_dir, "{}.json".format(dataset_type)))
-        return self._create_examples(lines, self.tokenizer, self.k_tokenizer, self.neighbour_num)
+        return self._create_examples(lines, self.tokenizer, self.k_tokenizer)
 
     def get_labels(self):
         return [0, 1]
 
-    def _create_examples(self, lines, tokenizer, k_tokenizer, neighbor_num, tokenizing_batch_size=32768):
+    def _create_examples(self, lines, tokenizer, k_tokenizer, tokenizing_batch_size=32768):
         examples = []
         label_list = ["/person/artist", "/person", "/transportation", "/location/cemetery", "/language", "/location",
                       "/location/city", "/transportation/road", "/person/actor", "/person/soldier",
@@ -722,12 +737,14 @@ class FigerProcessor(DataProcessor):
                       "/organization/airline", "/product/instrument", "/location/bridge", "/building/restaurant", "/medicine/symptom",
                       "/product/car", "/person/doctor", "/metropolitan_transit", "/metropolitan_transit/transit_line", "/transit",
                       "/product/spacecraft", "/broadcast", "/broadcast/tv_channel", "/building/library", "/education/department", "/building/hospital"]
+        label_set = set()
         for (i, line) in enumerate(lines):
             guid = i
             text_a = line['sent']
             text_b = (line['start'], line['end'])
             label = [0] * len(label_list)
             for item in line['labels']:
+                label_set.add(item)
                 label[label_list.index(item)] = 1
             neighbour = line['ents']
             examples.append(
