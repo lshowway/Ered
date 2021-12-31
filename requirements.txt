@@ -1,0 +1,30 @@
+## manually install apex
+# pip install --user --upgrade pip
+# cd apex
+# pip install -v --disable-pip-version-check --no-cache-dir --global-option="--cpp_ext" --global-option="--cuda_ext" ./
+## manually install this
+# pip install --user torch==1.7.0+cu101 torchvision==0.8.1+cu101 torchaudio==0.7.0 -f https://download.pytorch.org/whl/torch_stable.html
+tqdm==4.61.2
+numpy==1.19.5
+sklearn==0.0
+scikit-learn==0.24.2
+requests==2.26.0
+scipy==1.5.4
+sentencepiece==0.1.96
+tokenizers==0.9.4
+dataclasses
+filelock==3.0.12
+six==1.16.0
+###pip install --upgrade google-api-python-client
+boto3==1.18.40
+botocore==1.21.40
+regex==2021.8.28
+tensorboardX==2.4
+matplotlib==3.3.4
+transformers==4.0.1
+pip==21.2.4
+setuptools==58.0.4
+urllib3==1.26.6
+Pillow==8.3.2
+click==8.0.1
+sacremoses==0.0.45
