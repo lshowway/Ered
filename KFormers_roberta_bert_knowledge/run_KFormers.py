@@ -19,10 +19,10 @@ from transformers.models.roberta.tokenization_roberta_fast import RobertaTokeniz
 
 from transformers.optimization import AdamW, get_linear_schedule_with_warmup
 
-from KFormers_roberta_distilbert_modeling import KFormersRobertaForFiger, KFormersRobertaForOpenEntity
+
 from parameters import parse_args
 from utils import compute_metrics
-from data_utils import output_modes
+from data_utils import output_modes, processors
 
 logger = logging.getLogger(__name__)
 
@@ -55,103 +55,108 @@ def softmax(x):
     return softmax
 
 
-def load_kformers(args, backbone_config_class, k_config_class, backbone_model_class, k_model_class):
+def load_kformers(args, backbone_config_class, k_config_class, backbone_model_class, k_model_class,
+                  KFormersDownstreamModel, BaselineDownstreamModel):
+
     config_backbone = backbone_config_class.from_pretrained(args.backbone_model_name_or_path, output_hidden_states=True)
-    config_k = k_config_class.from_pretrained(args.knowledge_model_name_or_path,
-                                              output_hidden_states=True)  # 这是DistillBert的config
+    config_backbone.num_labels = args.num_labels
 
-    if args.task_name == 'figer':
-        kformers_model = KFormersRobertaForFiger(config=config_backbone, config_k=config_k,
+    if args.add_knowledge:
+        config_k = k_config_class.from_pretrained(args.knowledge_model_name_or_path,
+                                                  output_hidden_states=True)  # 这是DistillBert的config
+        kformers_model = KFormersDownstreamModel(config=config_backbone, config_k=config_k,
                                                  backbone_knowledge_dict=args.backbone_knowledge_dict)
-    elif args.task_name == 'open_entity':
-        kformers_model = KFormersRobertaForOpenEntity(config=config_backbone, config_k=config_k,
-                                                      backbone_knowledge_dict=args.backbone_knowledge_dict)
+        # Load or initialize parameters.
+        load_parameters = "pretrained"
+        if load_parameters == "initialization":
+            # Initialize with normal distribution.
+            for n, p in list(kformers_model.named_parameters()):
+                if 'gamma' not in n and 'beta' not in n:
+                    p.data.normal_(0, 0.02)
+        else:
+            # Initialize with pretrained model.
+            state_dict = kformers_model.state_dict()  # KFormers的全部参数
+
+            # for x in state_dict.keys():
+            #     print(x)
+
+            backbone_model_dict = backbone_model_class.from_pretrained(args.backbone_model_name_or_path,
+                                                                       config=config_backbone).state_dict()
+            knowledge_model_dict = k_model_class.from_pretrained(args.knowledge_model_name_or_path,
+                                                                 config=config_k).state_dict()
+
+            # for k, v in backbone_model_dict.items():
+            #     print(k)
+
+            # for k, v in knowledge_model_dict.items():
+            #     print(k)
+
+            news_kformers_state_dict = OrderedDict()
+            for key, value in backbone_model_dict.items():
+                key = key.replace(args.backbone_model_type, 'kformers')
+                if 'embeddings' in key:
+                    news_kformers_state_dict[key] = value
+                # "classifier.out_proj.weight", "classifier.out_proj.bias"这是roberta的
+                elif key in ["kformers.pooler.dense.weight", "kformers.pooler.dense.bias",
+                             "classifier.weight", "classifier.bias", "classifier.out_proj.weight",
+                             "classifier.out_proj.bias"]:  # from_pretrained有的
+                    # news_kformers_state_dict[key] = value
+                    continue
+                elif key in ["classifier.dense.weight", "classifier.dense.bias"]:  # for roberta
+                    if args.task_name in ['tacred', 'fewrel']:
+                        # if the task is relation classification, the output layer is not initialized by checkpoints
+                        pass
+                    else:
+                        news_kformers_state_dict[key] = value
+                elif key in ["classifier.weight", "classifier.bias"]:  # from_pretrained有的
+                    pass
+                elif key in ["lm_head.bias", "lm_head.dense.weight", "lm_head.dense.bias",
+                             "lm_head.layer_norm.weight", "lm_head.layer_norm.bias",
+                             "lm_head.decoder.weight"]:  # load有的参数
+                    pass
+                else:
+                    i = key.split('kformers.encoder.layer.')[-1]
+                    i = i.split('.')[0]
+                    i = int(i)
+                    key = key.replace('kformers.encoder.layer.%s' % i, 'kformers.encoder.layer.%s.backbone_layer' % i)
+                    news_kformers_state_dict[key] = value
+
+            backbone_knowledge_dict_reverse = {v: k for k, v in args.backbone_knowledge_dict.items()}
+            for key, value in knowledge_model_dict.items():
+                key = key.replace(args.knowledge_model_type, 'kformers')
+                if 'embeddings' in key:
+                    key = key.replace('kformers.embeddings', 'kformers.k_embeddings')
+                    news_kformers_state_dict[key] = value
+                elif key in ["pre_classifier.weight", "pre_classifier.bias", "classifier.weight",
+                             "classifier.bias"]:  # from_pre
+                    pass
+                elif key in ["vocab_transform.weight", "vocab_transform.bias", "vocab_layer_norm.weight",
+                             "vocab_layer_norm.bias", "vocab_projector.weight",
+                             "vocab_projector.bias"]:  # 这是load checkpoint有的参数
+                    pass
+                else:
+                    j = key.split('kformers.transformer.layer.')[-1]
+                    j = j.split('.')[0]
+                    i = backbone_knowledge_dict_reverse[int(j)]
+                    key = key.replace('kformers.transformer.layer.%s' % j, 'kformers.encoder.layer.%s.k_layer' % i)
+                    news_kformers_state_dict[key] = value
+
+            # for k, v in news_kformers_state_dict.items():
+            #     # print(k, v.size())
+            #     print(k)
+            # 在这里设置K-module的参数更新不更新
+            if not args.update_K_module:
+                for k, v in news_kformers_state_dict.items():
+                    if 'k_' in k:
+                        v.requires_grad = False
+            state_dict.update(news_kformers_state_dict)
+            kformers_model.load_state_dict(state_dict=state_dict)
+        return kformers_model
+
     else:
-        kformers_model = None
-    # Load or initialize parameters.
-    load_parameters = "pretrained"
-    if load_parameters == "initialization":
-        # Initialize with normal distribution.
-        for n, p in list(kformers_model.named_parameters()):
-            if 'gamma' not in n and 'beta' not in n:
-                p.data.normal_(0, 0.02)
-    else:
-        # Initialize with pretrained model.
-        state_dict = kformers_model.state_dict()  # KFormers的全部参数
+        baseline_model = BaselineDownstreamModel.from_pretrained(args.backbone_model_name_or_path, config=config_backbone)
 
-        # for x in state_dict.keys():
-        #     print(x)
-
-        backbone_model_dict = backbone_model_class.from_pretrained(args.backbone_model_name_or_path,
-                                                                   config=config_backbone).state_dict()
-        knowledge_model_dict = k_model_class.from_pretrained(args.knowledge_model_name_or_path,
-                                                             config=config_k).state_dict()
-
-        # for k, v in backbone_model_dict.items():
-        #     print(k)
-
-        # for k, v in knowledge_model_dict.items():
-        #     # print(k)
-        #     if k == 'distilbert.embeddings.word_embeddings.weight':
-        #         print(v[10000][: 20])
-
-        news_kformers_state_dict = OrderedDict()
-        for key, value in backbone_model_dict.items():
-            key = key.replace(args.backbone_model_type, 'kformers')
-            if 'embeddings' in key:
-                news_kformers_state_dict[key] = value
-            # "classifier.out_proj.weight", "classifier.out_proj.bias"这是roberta的
-            elif key in ["kformers.pooler.dense.weight", "kformers.pooler.dense.bias",
-                         "classifier.weight", "classifier.bias", "classifier.out_proj.weight",
-                         "classifier.out_proj.bias"]:  # from_pretrained有的
-                # news_kformers_state_dict[key] = value
-                continue
-            elif key in ["classifier.dense.weight", "classifier.dense.bias"]:  # for roberta
-                news_kformers_state_dict[key] = value
-            elif key in ["classifier.weight", "classifier.bias"]:  # from_pretrained有的
-                pass
-            elif key in ["lm_head.bias", "lm_head.dense.weight", "lm_head.dense.bias",
-                         "lm_head.layer_norm.weight", "lm_head.layer_norm.bias", "lm_head.decoder.weight"]:  # load有的参数
-                pass
-            else:
-                i = key.split('kformers.encoder.layer.')[-1]
-                i = i.split('.')[0]
-                i = int(i)
-                key = key.replace('kformers.encoder.layer.%s' % i, 'kformers.encoder.layer.%s.backbone_layer' % i)
-                news_kformers_state_dict[key] = value
-
-        backbone_knowledge_dict_reverse = {v: k for k, v in args.backbone_knowledge_dict.items()}
-        for key, value in knowledge_model_dict.items():
-            key = key.replace(args.knowledge_model_type, 'kformers')
-            if 'embeddings' in key:
-                key = key.replace('kformers.embeddings', 'kformers.k_embeddings')
-                news_kformers_state_dict[key] = value
-            elif key in ["pre_classifier.weight", "pre_classifier.bias", "classifier.weight",
-                         "classifier.bias"]:  # from_pre
-                pass
-            elif key in ["vocab_transform.weight", "vocab_transform.bias", "vocab_layer_norm.weight",
-                         "vocab_layer_norm.bias", "vocab_projector.weight",
-                         "vocab_projector.bias"]:  # 这是load checkpoint有的参数
-                pass
-            else:
-                j = key.split('kformers.transformer.layer.')[-1]
-                j = j.split('.')[0]
-                i = backbone_knowledge_dict_reverse[int(j)]
-                key = key.replace('kformers.transformer.layer.%s' % j, 'kformers.encoder.layer.%s.k_layer' % i)
-                news_kformers_state_dict[key] = value
-
-        # for k, v in news_kformers_state_dict.items():
-        #     # print(k, v.size())
-        #     print(k)
-        # 在这里设置K-module的参数更新不更新
-        # if not args.update_K_module:
-        #     for k, v in news_kformers_state_dict.items():
-        #         if 'k_' in k:
-        #             v.requires_grad = False
-        state_dict.update(news_kformers_state_dict)
-        kformers_model.load_state_dict(state_dict=state_dict)
-        print('==>', state_dict['kformers.k_embeddings.word_embeddings.weight'][10000][: 20])
-    return kformers_model
+        return baseline_model
 
 
 def do_train(args, model, train_dataset, val_dataset, test_dataset=None):
@@ -260,7 +265,7 @@ def do_train(args, model, train_dataset, val_dataset, test_dataset=None):
                 scheduler.step()  # Update learning rate schedule
                 model.zero_grad()
                 global_step += 1
-            if args.local_rank in [-1, 0] and global_step % 100 == 0:
+            if args.local_rank in [-1, 0] and args.logging_steps > 0 and global_step % args.logging_steps == 0:
                 logger.info(
                     "epoch {}, step {}, global_step {}, train_loss: {:.5f}".format(epoch, step + 1, global_step, loss))
             if args.local_rank in [-1,
@@ -341,8 +346,10 @@ def do_eval(model, args, val_dataset, global_step):
                 preds = np.append(preds, logits.detach().cpu().numpy(), axis=0)
                 out_label_ids = np.append(out_label_ids, label.detach().cpu().numpy(), axis=0)
 
-    if args.task_name in ['open_entity']:
+    if args.task_name in ['open_entity',  'figer']:
         pass
+    elif args.task_name in ['tacred', 'fewrel']:
+        preds = np.argmax(preds, axis=1)
     # elif args.output_mode == "classification":
     #     preds = np.argmax(preds, axis=1)
     # elif args.output_mode == "regression":
@@ -362,7 +369,18 @@ def set_seed(args):
 
 def main():
     args = parse_args()
+    if args.task_name in ['open_entity', 'figer']:
+        from KFormers_roberta_distilbert_modeling import KFormersRobertaForEntityTyping as KFormersDownstreamModel
+        from KFormers_roberta_distilbert_modeling import RobertaForEntityTyping as BaselineDownstreamModel
+    elif args.task_name in ['tacred', 'fewrel']:
+        from KFormers_roberta_distilbert_modeling import KFormersRobertaRelationClassification as KFormersDownstreamModel
+        from KFormers_roberta_distilbert_modeling import RobertaForRelationClassification as BaselineDownstreamModel
+    else:
+        KFormersDownstreamModel = None
+        BaselineDownstreamModel = None
 
+    if not args.add_knowledge and args.update_K_module:
+        raise ValueError("when knowledge is not used, K-module should be closed")
     # Setup CUDA, GPU & distributed training
     if args.local_rank == -1:
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -395,16 +413,15 @@ def main():
     knowledge_tokenizer = k_tokenizer_class.from_pretrained(args.knowledge_model_name_or_path)
 
     # get num_label
-    # input_mode = input_modes[args.task_name]
-    # t = 1 if input_mode == 'single_sentence' else 2
-    # processor = processors[args.task_name](tokenizer=backbone_tokenizer, k_tokenizer=knowledge_tokenizer,
-    #                                        description_num=args.neighbor_num * t)
-    # label_list = processor.get_labels()
-    # num_labels = len(label_list)
-    # args.num_labels = num_labels
+    processor = processors[args.task_name](tokenizer=backbone_tokenizer, k_tokenizer=knowledge_tokenizer,
+                                           negative_sample=args.negative_sample)
+    label_list = processor.get_labels()
+    num_labels = len(label_list)
+    args.num_labels = num_labels
     args.output_mode = output_modes[args.task_name]
 
-    model = load_kformers(args, backbone_config_class, k_config_class, backbone_model_class, k_model_class)
+    model = load_kformers(args, backbone_config_class, k_config_class, backbone_model_class, k_model_class,
+                          KFormersDownstreamModel, BaselineDownstreamModel)
     if args.local_rank == 0:
         torch.distributed.barrier()  # Make sure only the first process in distributed training will download model & vocab
     logging.info('loading backbone model: {}, knowledge module model: {}'.format(args.backbone_model_type,

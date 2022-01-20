@@ -8,6 +8,7 @@ import re
 from sklearn.metrics import roc_auc_score
 from sklearn.metrics import precision_recall_curve, auc, roc_curve, accuracy_score, matthews_corrcoef, f1_score
 from scipy.stats import pearsonr, spearmanr
+from collections import Counter
 
 
 def word_tokenize(sent):
@@ -269,6 +270,73 @@ def entity_typing_accuracy(out, l):
     return rel
 
 
+# def micro_f1_tacred(preds, labels, NO_RELATION=-1):
+#     correct_by_relation = Counter()
+#     guessed_by_relation = Counter()
+#     gold_by_relation = Counter()
+#
+#     for guess, gold in zip(preds, labels):
+#         if gold == NO_RELATION and guess == NO_RELATION:
+#             pass
+#         elif gold == NO_RELATION and guess != NO_RELATION:
+#             guessed_by_relation[guess] += 1
+#         elif gold != NO_RELATION and guess == NO_RELATION:
+#             gold_by_relation[gold] += 1
+#         elif gold != NO_RELATION and guess != NO_RELATION:
+#             guessed_by_relation[guess] += 1
+#             gold_by_relation[gold] += 1
+#             if gold == guess:
+#                 correct_by_relation[guess] += 1
+#
+#     prec_micro = 1.0
+#     if sum(guessed_by_relation.values()) > 0:
+#         prec_micro = float(sum(correct_by_relation.values())) / float(sum(guessed_by_relation.values()))
+#
+#     recall_micro = 0.0
+#     if sum(gold_by_relation.values()) > 0:
+#         recall_micro = float(sum(correct_by_relation.values())) / float(sum(gold_by_relation.values()))
+#
+#     f1_micro = 0.0
+#     if prec_micro + recall_micro > 0.0:
+#         f1_micro = 2.0 * prec_micro * recall_micro / (prec_micro + recall_micro)
+#
+#     return {"pre": round(prec_micro, 4), "rec": round(recall_micro, 4), "micro F1": [round(f1_micro, 4)]}
+
+
+def relation_metric(pred_result, labels, na_id):
+    correct = 0
+    total = len(labels)
+    correct_positive = 0
+    pred_positive = 0
+    gold_positive = 0
+
+    for i in range(total):
+        if labels[i] == pred_result[i]:
+            correct += 1
+            if labels[i] != na_id:
+                correct_positive += 1
+        if labels[i] != na_id:
+            gold_positive += 1
+        if pred_result[i] != na_id:
+            pred_positive += 1
+    acc = float(correct) / float(total)
+    try:
+        micro_p = float(correct_positive) / float(pred_positive)
+    except:
+        micro_p = 0
+    try:
+        micro_r = float(correct_positive) / float(gold_positive)
+    except:
+        micro_r = 0
+    try:
+        micro_f1 = 2 * micro_p * micro_r / (micro_p + micro_r)
+    except:
+        micro_f1 = 0
+    result = {'acc': acc, 'micro_p': micro_p,
+              'micro_r': micro_r, 'micro_f1': micro_f1}
+    return result
+
+
 def compute_metrics(task_name, preds, labels):
     assert len(preds) == len(labels)
     if task_name == "cola":
@@ -303,6 +371,12 @@ def compute_metrics(task_name, preds, labels):
         return entity_typing_accuracy(preds, labels)
     elif task_name == 'figer':
         return entity_typing_accuracy(preds, labels)
+    elif task_name == 'tacred':
+        from data_utils import TACRED_relations
+        NO_RELATION = TACRED_relations['NA']
+        return micro_f1_tacred(preds, labels, NO_RELATION)
+    elif task_name == 'fewrel':
+        return micro_f1_tacred(preds, labels)
     elif task_name == 'quality_control':
         return quality_control_metric(preds, labels)
     elif task_name == "ads-multitask":

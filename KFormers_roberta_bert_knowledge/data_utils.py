@@ -18,7 +18,7 @@ def load_and_cache_examples(args, task, tokenizer, k_tokenizer, dataset_type, ev
         torch.distributed.barrier()  # Make sure only the first process in distributed training process the dataset, and the others will use the cache
     input_mode = input_modes[task]
     t = 1 if input_mode == 'single_sentence' else 2
-    processor = processors[task](tokenizer, k_tokenizer)
+    processor = processors[task](tokenizer, k_tokenizer, negative_sample=args.negative_sample)
     output_mode = output_modes[task]
     # Load data features from cache or dataset file
     cached_features_file = os.path.join(args.data_dir, 'cached_{}_{}_{}_{}_{}_{}_{}_{}'.format(
@@ -65,6 +65,30 @@ def load_and_cache_examples(args, task, tokenizer, k_tokenizer, dataset_type, ev
                                                                   pad_token_segment_id=4 if args.model_type in [
                                                                       'xlnet'] else 0,
                                                                   )
+        elif input_mode == "entity_entity_sentence":
+            features = convert_examples_to_features_relation_classification(examples, label_list, args.qid_file, args.backbone_seq_length,
+                                                                            args.knowledge_seq_length,
+                                                                            args.max_num_entity, tokenizer, k_tokenizer,
+                                                                            output_mode, input_mode,
+                                                                            cls_token_at_end=bool(
+                                                                                args.model_type in ['xlnet']),
+                                                                            # xlnet has a cls token at the end
+                                                                            cls_token=tokenizer.cls_token,
+                                                                            cls_token_segment_id=2 if args.model_type in [
+                                                                                'xlnet'] else 0,
+                                                                            sep_token=tokenizer.sep_token,
+                                                                            sep_token_extra=bool(
+                                                                                args.model_type in ['roberta']),
+                                                                            # roberta uses an extra separator b/w pairs of sentences, cf. github.com/pytorch/fairseq/commit/1684e166e3da03f5b600dbb7855cb98ddfcd0805
+                                                                            pad_on_left=bool(
+                                                                                args.model_type in ['xlnet']),
+                                                                            # pad on the left for xlnet
+                                                                            pad_token=
+                                                                            tokenizer.convert_tokens_to_ids(
+                                                                                [tokenizer.pad_token])[0],
+                                                                            pad_token_segment_id=4 if args.model_type in [
+                                                                                'xlnet'] else 0,
+                                                                            )
         else:
             features = None
         if args.local_rank in [-1, 0]:
@@ -434,6 +458,185 @@ def convert_examples_to_features_entity_typing(examples, qid_file, origin_seq_le
     return features
 
 
+def convert_examples_to_features_relation_classification(examples, label_list, qid_file,
+                                                         origin_seq_length, knowledge_seq_length, max_num_entity,
+                                        tokenizer, k_tokenizer, output_mode, input_mode,
+                                        cls_token_at_end=False,
+                                        cls_token='[CLS]',
+                                        cls_token_segment_id=1,
+                                        sep_token='[SEP]',
+                                        sep_token_extra=False,
+                                        pad_on_left=False,
+                                        pad_token=0,
+                                        pad_token_segment_id=0,
+                                        sequence_a_segment_id=0,
+                                        sequence_b_segment_id=1,
+                                        mask_padding_with_zero=True):
+
+    QID_entityName_dict, QID_description_dict = load_description(qid_file)
+    label_map = {label: i for i, label in enumerate(label_list)}
+    features = []
+    for (ex_index, example) in enumerate(examples):
+        if ex_index % 10000 == 0:
+            logger.info("Writing example %d of %d" % (ex_index, len(examples)))
+        # ==== backbone ====
+        neighbours = [x[0] for x in example.neighbour]
+
+        text_a = example.text_a
+        subj_start, subj_end, obj_start, obj_end = example.text_b
+        # relation = example.label
+        if subj_start < obj_start:
+            # sub, and then obj (有空格啊，妈的)
+            before_sub = text_a[:subj_start].strip()
+            tokens = tokenizer.tokenize(before_sub)
+            subj_special_start = len(tokens)
+            tokens += ['@']
+            sub = text_a[subj_start:subj_end + 1].strip()
+            tokens += tokenizer.tokenize(sub)
+            tokens += ['@']
+            between_sub_obj = text_a[subj_end + 1: obj_start].strip()
+            tokens += tokenizer.tokenize(between_sub_obj)
+            obj_special_start = len(tokens)
+            tokens += ['#']
+            obj = text_a[obj_start:obj_end + 1].strip()
+            tokens += tokenizer.tokenize(obj)
+            tokens += ['#']
+            after_obj = text_a[obj_end + 1:].strip()
+            tokens += tokenizer.tokenize(after_obj)
+        else:
+            # ojb, and then sub
+            before_obj = text_a[:obj_start].strip()
+            tokens = tokenizer.tokenize(before_obj)
+            obj_special_start = len(tokens)
+            tokens += ['#']
+            obj = text_a[obj_start: obj_end + 1].strip()
+            tokens += tokenizer.tokenize(obj)
+            tokens += ['#']
+            between_obj_sub = text_a[obj_end + 1: subj_start].strip()
+            tokens += tokenizer.tokenize(between_obj_sub)
+            subj_special_start = len(tokens)
+            tokens += ['@']
+            sub = text_a[subj_start:subj_end + 1].strip()
+            tokens += tokenizer.tokenize(sub)
+            tokens += ['@']
+            after_sub = text_a[subj_end + 1:].strip()
+            tokens += tokenizer.tokenize(after_sub)
+
+        tokens = [cls_token] + tokens + [sep_token]
+        tokens = tokens[: origin_seq_length]
+
+        subj_special_start += 1 # because of cls_token
+        obj_special_start += 1
+        # 下面有关于start，end超过最长长度时的处理
+        # if subj_special_start > origin_seq_length:
+        #     subj_special_start = 0
+        # if obj_special_start > origin_seq_length:
+        #     obj_special_start = 0
+        # relation = label_map[example.label]
+
+        segment_ids = [sequence_a_segment_id] * len(tokens)
+        input_ids = tokenizer.convert_tokens_to_ids(tokens)
+        # The mask has 1 for real tokens and 0 for padding tokens. Only real
+        # tokens are attended to.
+        input_mask = [1 if mask_padding_with_zero else 0] * len(input_ids)
+
+        # Zero-pad up to the sequence length.
+        padding_length = origin_seq_length - len(input_ids)
+        if pad_on_left:
+            input_ids = ([pad_token] * padding_length) + input_ids
+            input_mask = ([0 if mask_padding_with_zero else 1] * padding_length) + input_mask
+            segment_ids = ([pad_token_segment_id] * padding_length) + segment_ids
+        else:
+            input_ids = input_ids + ([pad_token] * padding_length)
+            input_mask = input_mask + ([0 if mask_padding_with_zero else 1] * padding_length)
+            segment_ids = segment_ids + ([pad_token_segment_id] * padding_length)
+        assert len(input_ids) == origin_seq_length
+        assert len(input_mask) == origin_seq_length
+        assert len(segment_ids) == origin_seq_length
+
+        if output_mode == "classification":
+            label_id = label_map[example.label]
+        elif output_mode == "regression":
+            label_id = float(label_map[example.label])
+        else:
+            raise KeyError(output_mode)
+
+        if ex_index < 10:
+            logger.info("*** Example ***")
+            logger.info("guid: %s" % (example.guid))
+            logger.info("tokens: %s" % " ".join(
+                [str(x) for x in tokens]))
+            logger.info("input_ids: %s" % " ".join([str(x) for x in input_ids]))
+            logger.info("input_mask: %s" % " ".join([str(x) for x in input_mask]))
+            logger.info("segment_ids: %s" % " ".join([str(x) for x in segment_ids]))
+            logger.info("label: {}".format(label_id))
+        # sure that sub & obj are included in the sequence
+        if subj_special_start > origin_seq_length - 1:
+            # subj_special_start = origin_seq_length - 10
+            subj_special_start = 0
+        if obj_special_start > origin_seq_length - 1:
+            # obj_special_start = origin_seq_length - 10
+            obj_special_start = 0
+        # the sub_special_start_id is an array, where the idx of start id is 1, other position is 0.
+        subj_special_start_id = np.zeros(origin_seq_length)
+        obj_special_start_id = np.zeros(origin_seq_length)
+        subj_special_start_id[subj_special_start] = 1
+        obj_special_start_id[obj_special_start] = 1
+        # ==== backbone ====
+        # ==== knowledge ====
+        neighbour_one, neighbour_att_mask_one, neighbour_segment_one = [], [], []
+        NULL_description = "The entity does not have description"
+        neighbours = [QID_description_dict.get(qid, NULL_description) for qid in neighbours]
+        neighbours_mask = [1] * min(max_num_entity, len(neighbours)) + [0] * (
+                    max_num_entity - min(max_num_entity, len(neighbours)))
+        neighbours = neighbours[: max_num_entity] + ["PAD DESCRIPTION"] * (max_num_entity - len(neighbours))
+        for x in neighbours:
+            x = k_tokenizer.tokenize(x)
+            x = [k_tokenizer.cls_token] + x + [k_tokenizer.sep_token]
+            x = x[: knowledge_seq_length]
+            x_1 = k_tokenizer.convert_tokens_to_ids(x)
+            x_2 = [1 if mask_padding_with_zero else 0] * len(x_1)  # input_mask
+            x_3 = [1 - k_tokenizer.pad_token_type_id] * len(x)
+            padding_length = knowledge_seq_length - len(x)
+            if pad_on_left:
+                x_1 = ([k_tokenizer.pad_token_id] * padding_length) + x_1
+                x_2 = ([0 if mask_padding_with_zero else 1] * padding_length) + x_2
+                x_3 = ([k_tokenizer.pad_token_type_id] * padding_length) + x_3
+            else:
+                x_1 = x_1 + ([k_tokenizer.pad_token_id] * padding_length)
+                x_2 = x_2 + ([0 if mask_padding_with_zero else 1] * padding_length)
+                x_3 = x_3 + ([k_tokenizer.pad_token_type_id] * padding_length)
+            assert len(x_1) == knowledge_seq_length
+            assert len(x_2) == knowledge_seq_length
+            assert len(x_3) == knowledge_seq_length
+            neighbour_one.append(x_1)
+            neighbour_att_mask_one.append(x_2)
+            neighbour_segment_one.append(x_3)
+        # print(len(neighbour_one))  # 如何处理多个entity，多个description
+        if ex_index < 5:
+            logger.info("*** Example k***")
+            logger.info("tokens_k: %s" % " ".join([str(x_) for x_ in neighbours]))
+            logger.info("neighbours_mask: %s" % " ".join([str(x_) for x_ in neighbours_mask]))
+            logger.info("input_ids_k: %s" % " ".join([str(x) for x in neighbour_one]))
+            logger.info("input_mask_k: %s" % " ".join([str(x) for x in neighbour_att_mask_one]))
+            logger.info("segment_ids_k: %s" % " ".join([str(x) for x in neighbour_segment_one]))
+        # ==== knowledge ====
+
+        features.append(
+            InputFeatures(input_ids=input_ids,
+                          input_mask=input_mask,
+                          segment_ids=segment_ids,
+                          label_id=label_id,
+                          start_id=(subj_special_start_id, obj_special_start_id),
+                          k_input_ids=neighbour_one,
+                          k_mask=neighbours_mask,  # 表示有几条有效description
+                          k_input_mask=neighbour_att_mask_one,
+                          k_segment_ids=neighbour_segment_one,  # distilBert没有使用token_type_embedding
+                          ))
+
+    return features
+
+
 class InputFeatures(object):
     def __init__(self, input_ids=None, input_mask=None, segment_ids=None,
                  start_id=None,
@@ -678,11 +881,12 @@ class OpenentityProcessor(DataProcessor):
         return self._create_examples(lines, self.tokenizer, self.k_tokenizer)
 
     def get_labels(self):
-        return [0, 1]
+        label_list = ['entity', 'location', 'time', 'organization', 'object', 'event', 'place', 'person', 'group']
+        return label_list
 
     def _create_examples(self, lines, tokenizer, k_tokenizer, tokenizing_batch_size=32768):
         examples = []
-        label_list = ['entity', 'location', 'time', 'organization', 'object', 'event', 'place', 'person', 'group']
+        label_list = self.get_labels()
         label_set = set()
         for (i, line) in enumerate(lines):
             guid = i
@@ -712,31 +916,44 @@ class FigerProcessor(DataProcessor):
         return self._create_examples(lines, self.tokenizer, self.k_tokenizer)
 
     def get_labels(self):
-        return [0, 1]
-
-    def _create_examples(self, lines, tokenizer, k_tokenizer, tokenizing_batch_size=32768):
-        examples = []
         label_list = ["/person/artist", "/person", "/transportation", "/location/cemetery", "/language", "/location",
                       "/location/city", "/transportation/road", "/person/actor", "/person/soldier",
                       "/person/politician", "/location/country", "/geography", "/geography/island", "/people",
                       "/people/ethnicity", "/internet", "/internet/website", "/broadcast_network", "/organization",
                       "/organization/company", "/person/athlete", "/organization/sports_team", "/location/county",
-                      "/geography/mountain", "/title", "/person/musician", "/event", "/organization/educational_institution",
-                      "/person/author", "/military", "/astral_body", "/written_work", "/event/military_conflict", "/person/engineer",
-                      "/event/attack", "/organization/sports_league", "/government", "/government/government", "/location/province",
-                      "/chemistry", "/music", "/education/educational_degree", "/education", "/building/sports_facility",
+                      "/geography/mountain", "/title", "/person/musician", "/event",
+                      "/organization/educational_institution",
+                      "/person/author", "/military", "/astral_body", "/written_work", "/event/military_conflict",
+                      "/person/engineer",
+                      "/event/attack", "/organization/sports_league", "/government", "/government/government",
+                      "/location/province",
+                      "/chemistry", "/music", "/education/educational_degree", "/education",
+                      "/building/sports_facility",
                       "/building", "/government_agency", "/broadcast_program", "/living_thing", "/event/election",
                       "/location/body_of_water", "/person/director", "/park", "/event/sports_event", "/law",
-                      "/product/ship", "/product", "/product/weapon", "/building/airport", "/software", "/computer/programming_language",
+                      "/product/ship", "/product", "/product/weapon", "/building/airport", "/software",
+                      "/computer/programming_language",
                       "/computer", "/body_part", "/disease", "/art", "/art/film", "/person/monarch", "/game", "/food",
-                      "/person/coach", "/government/political_party", "/news_agency", "/rail/railway", "/rail", "/train",
+                      "/person/coach", "/government/political_party", "/news_agency", "/rail/railway", "/rail",
+                      "/train",
                       "/play", "/god", "/product/airplane", "/event/natural_disaster", "/time", "/person/architect",
-                      "/award", "/medicine/medical_treatment", "/medicine/drug", "/medicine", "/organization/fraternity_sorority",
-                      "/event/protest", "/product/computer", "/person/religious_leader", "/religion", "/religion/religion",
-                      "/building/theater", "/biology", "/livingthing", "/livingthing/animal", "/finance/currency", "/finance",
-                      "/organization/airline", "/product/instrument", "/location/bridge", "/building/restaurant", "/medicine/symptom",
-                      "/product/car", "/person/doctor", "/metropolitan_transit", "/metropolitan_transit/transit_line", "/transit",
-                      "/product/spacecraft", "/broadcast", "/broadcast/tv_channel", "/building/library", "/education/department", "/building/hospital"]
+                      "/award", "/medicine/medical_treatment", "/medicine/drug", "/medicine",
+                      "/organization/fraternity_sorority",
+                      "/event/protest", "/product/computer", "/person/religious_leader", "/religion",
+                      "/religion/religion",
+                      "/building/theater", "/biology", "/livingthing", "/livingthing/animal", "/finance/currency",
+                      "/finance",
+                      "/organization/airline", "/product/instrument", "/location/bridge", "/building/restaurant",
+                      "/medicine/symptom",
+                      "/product/car", "/person/doctor", "/metropolitan_transit", "/metropolitan_transit/transit_line",
+                      "/transit",
+                      "/product/spacecraft", "/broadcast", "/broadcast/tv_channel", "/building/library",
+                      "/education/department", "/building/hospital"]
+        return label_list
+
+    def _create_examples(self, lines, tokenizer, k_tokenizer, tokenizing_batch_size=32768):
+        examples = []
+        label_list = self.get_labels()
         label_set = set()
         for (i, line) in enumerate(lines):
             guid = i
@@ -747,6 +964,117 @@ class FigerProcessor(DataProcessor):
                 label_set.add(item)
                 label[label_list.index(item)] = 1
             neighbour = line['ents']
+            examples.append(
+                InputExample(guid=guid, text_a=text_a, text_b=text_b, neighbour=neighbour, label=label))
+        return examples
+
+
+TACRED_relations = ['per:siblings', 'per:parents', 'org:member_of', 'per:origin', 'per:alternate_names', 'per:date_of_death',
+             'per:title', 'org:alternate_names', 'per:countries_of_residence', 'org:stateorprovince_of_headquarters',
+             'per:city_of_death', 'per:schools_attended', 'per:employee_of', 'org:members', 'org:dissolved',
+             'per:date_of_birth', 'org:number_of_employees/members', 'org:founded', 'org:founded_by',
+             'org:political/religious_affiliation', 'org:website', 'org:top_members/employees', 'per:children',
+             'per:cities_of_residence', 'per:cause_of_death', 'org:shareholders', 'per:age', 'per:religion',
+             'NA',
+             'org:parents', 'org:subsidiaries', 'per:country_of_birth', 'per:stateorprovince_of_death',
+             'per:city_of_birth',
+             'per:stateorprovinces_of_residence', 'org:country_of_headquarters', 'per:other_family',
+             'per:stateorprovince_of_birth',
+             'per:country_of_death', 'per:charges', 'org:city_of_headquarters', 'per:spouse']
+
+
+class TACREDProcessor(DataProcessor):
+    def __init__(self, tokenizer=None, k_tokenizer=None, negative_sample=-1, use_entity=False):
+        # self.tokenizer = tokenizer
+        # self.k_tokenizer = k_tokenizer
+        self.negative_sample = negative_sample
+
+    def get_train_examples(self, data_dir, dataset_type):
+        """See base class."""
+        return self._create_examples(
+            self._read_json(os.path.join(data_dir, "{}.json".format(dataset_type))), dataset_type, self.negative_sample)
+
+    def get_dev_examples(self, data_dir, dataset_type):
+        """See base class."""
+        return self._create_examples(
+            self._read_json(os.path.join(data_dir, "{}.json".format(dataset_type))), dataset_type)
+
+    def get_labels(self):
+        relations = TACRED_relations
+
+        return relations
+
+    def _create_examples(self, lines, dataset_type, negative_sample=-1):
+        """Creates examples for the training and dev sets."""
+        examples = []
+        no_relation_number = negative_sample
+        for (i, line) in enumerate(lines):
+            guid = i
+            # text_a: tokenized words
+            text_a = line['text']
+            # text_b: other information
+            # it is: sub_start, sub_end, obj_start, obj_end
+            for x in line['ents']:
+                if x[1] == 1:
+                    x[1] = 0
+            text_b = (line["ents"][0][1], line["ents"][0][2], line["ents"][1][1], line["ents"][1][2])
+            label = line['label']
+            neighbour = line['ann']
+            if neighbour == "None" or neighbour is None:
+                print(line)
+            # if label == 'NA' and self.negative_sample > 0 and dataset_type == 'train':
+            #     no_relation_number -= 1
+            #     if no_relation_number > 0:
+            #         examples.append(
+            #             InputExample(guid=guid, text_a=text_a, text_b=text_b, neighbour=neighbour, label=label))
+            #     else:
+            #         continue
+            # else:
+            examples.append(
+                InputExample(guid=guid, text_a=text_a, text_b=text_b, neighbour=neighbour, label=label))
+
+        return examples
+
+
+class FewrelProcessor(DataProcessor):
+    def __init__(self, tokenizer=None, k_tokenizer=None, negative_sample=-1, use_entity=False):
+        # self.tokenizer = tokenizer
+        # self.k_tokenizer = k_tokenizer
+        self.negative_sample = negative_sample
+
+    def get_train_examples(self, data_dir, dataset_type):
+        """See base class."""
+        examples = self._create_examples(
+            self._read_json(os.path.join(data_dir, "{}.json".format(dataset_type))), "train")
+        return examples
+
+    def get_dev_examples(self, data_dir, dataset_type):
+        """See base class."""
+        return self._create_examples(
+            self._read_json(os.path.join(data_dir, "dev.json")), "dev")
+
+    def get_labels(self):
+        """Useless"""
+        labels = ['P22', 'P449', 'P137', 'P57', 'P750', 'P102', 'P127', 'P1346', 'P410', 'P156', 'P26', 'P674', 'P306', 'P931',
+         'P1435', 'P495', 'P460', 'P1411', 'P1001', 'P6', 'P413', 'P178', 'P118', 'P276', 'P361', 'P710', 'P155',
+         'P740', 'P31', 'P1303', 'P136', 'P974', 'P407', 'P40', 'P39', 'P175', 'P463', 'P527', 'P17', 'P101', 'P800',
+         'P3373', 'P2094', 'P135', 'P58', 'P206', 'P1344', 'P27', 'P105', 'P25', 'P1408', 'P3450', 'P84', 'P991',
+         'P1877', 'P106', 'P264', 'P355', 'P937', 'P400', 'P177', 'P140', 'P1923', 'P706', 'P123', 'P131', 'P159',
+         'P641', 'P412', 'P403', 'P921', 'P176', 'P59', 'P466', 'P241', 'P150', 'P86', 'P4552', 'P551', 'P364']
+        return labels
+
+    def _create_examples(self, lines, dataset_type):
+        """Creates examples for the training and dev sets."""
+        examples = []
+        for (i, line) in enumerate(lines):
+            guid = "%s-%s" % (dataset_type, i)
+            for x in line['ents']:
+                if x[1] == 1:
+                    x[1] = 0
+            text_a = line['text']
+            text_b = (line['ents'][0][1], line['ents'][0][2], line['ents'][1][1],  line['ents'][1][2])
+            neighbour = line['ents']
+            label = line['label']
             examples.append(
                 InputExample(guid=guid, text_a=text_a, text_b=text_b, neighbour=neighbour, label=label))
         return examples
@@ -765,11 +1093,14 @@ def load_description(file):
             QID_description_dict[qid] = des
     return QID_entityName_dict, QID_description_dict
 
+
 processors = {
     "sst2": Sst2Processor,
     "quality_control": QcProcessor,
     "open_entity": OpenentityProcessor,
     "figer": FigerProcessor,
+    "tacred": TACREDProcessor,
+    "fewrel": FewrelProcessor,
 }
 
 output_modes = {
@@ -780,6 +1111,8 @@ output_modes = {
     "quality_control": "classification",
     "open_entity": "classification",
     "figer": "classification",
+    "tacred": "classification",
+    "fewrel": "classification",
 }
 
 input_modes = {
@@ -790,4 +1123,6 @@ input_modes = {
     "quality_control": "sentence_pair",
     "open_entity": "entity_sentence",
     "figer": "entity_sentence",
+    "tacred": "entity_entity_sentence",
+    "fewrel": "entity_entity_sentence",
 }
