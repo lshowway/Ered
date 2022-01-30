@@ -214,8 +214,10 @@ class KFormersModel(nn.Module):
             return (original_text_output, pooled_output, description_output)
 
 
-class RobertaOutputLayer(nn.Module):
-    """Head for sentence-level classification tasks."""
+
+# --------------------------------------------------------------------------
+class RobertaOutputLayerEntityTyping(nn.Module):
+    """Head for entity-level classification tasks."""
 
     def __init__(self, config):
         super().__init__()
@@ -232,14 +234,35 @@ class RobertaOutputLayer(nn.Module):
         x = self.dropout(x)
         x = self.out_proj(x)
         return x
+
+
+
+class RobertaOutputLayerSequenceClassification(nn.Module):
+    """Head for sentence-level classification tasks."""
+
+    def __init__(self, config):
+        super().__init__()
+        self.dense = nn.Linear(config.hidden_size, config.hidden_size)
+        self.dropout = nn.Dropout(config.hidden_dropout_prob)
+        self.out_proj = nn.Linear(config.hidden_size, config.num_labels)
+
+    def forward(self, features, **kwargs):
+        x = features[:, 0, :]  # take <s> token (equiv. to [CLS])
+        x = self.dropout(x)
+        x = self.dense(x)
+        x = torch.tanh(x)
+        x = self.dropout(x)
+        x = self.out_proj(x)
+        return x
+
 
 
 class RobertaOutputLayerRelationClassification(nn.Module):
-    """Head for sentence-level classification tasks."""
+    """Head for two-entity classification tasks."""
 
     def __init__(self, config):
         super().__init__()
-        self.dense = nn.Linear(config.in_hidden_size, config.hidden_size)
+        self.dense = nn.Linear(config.hidden_size * 2, config.hidden_size)
         self.dropout = nn.Dropout(config.hidden_dropout_prob)
         self.out_proj = nn.Linear(config.hidden_size, config.num_labels)
 
@@ -254,9 +277,115 @@ class RobertaOutputLayerRelationClassification(nn.Module):
         return x
 
 
-class KFormersRobertaForEntityTyping(BackbonePreTrainedModel):  # 这个不能继承一个类吧？两个？
+
+# ------------------------------------------------------------------------
+class RobertaForEntityTyping(BackbonePreTrainedModel):  # 这个不能继承一个类吧？两个？
+    def __init__(self, config):
+        super(RobertaForEntityTyping, self).__init__(config)
+        self.num_labels = config.num_labels
+        config.add_pooling_layer = False
+
+        self.roberta = BackboneModel(config)
+        config.in_hidden_size = config.hidden_size
+        self.classifier = RobertaOutputLayerEntityTyping(config)
+
+        self.loss = nn.BCEWithLogitsLoss(reduction='mean')
+        self.init_weights()
+
+    def forward(self, input_ids=None, attention_mask=None, token_type_ids=None, position_ids=None, \
+                k_input_ids_list=None, k_mask=None, k_attention_mask_list=None,
+                k_token_type_ids_list=None, k_position_ids=None, label=None, start_id=None):
+        outputs = self.roberta(input_ids=input_ids, attention_mask=attention_mask,
+                                token_type_ids=token_type_ids, position_ids=position_ids)
+        original_text_output = outputs[0]  # batch L d
+        start_id = start_id.unsqueeze(1)  # batch 1 L
+        entity_vec = torch.bmm(start_id, original_text_output).squeeze(1)  # batch d
+        logits = self.classifier(entity_vec)
+        if label is not None:
+            loss = self.loss(logits.view(-1, self.num_labels), label.view(-1, self.num_labels))
+            return logits, loss
+        else:
+            return logits
+
+
+
+class RobertaForRelationClassification(BackbonePreTrainedModel):  # 这个不能继承一个类吧？两个？
+    def __init__(self, config):
+        super(RobertaForRelationClassification, self).__init__(config)
+        self.num_labels = config.num_labels
+        config.add_pooling_layer = False
+
+        self.roberta = BackboneModel(config)
+        self.classifier = RobertaOutputLayerRelationClassification(config)
+
+        self.loss = nn.CrossEntropyLoss(reduction='mean')
+        self.init_weights()
+
+    def forward(self, input_ids=None, attention_mask=None, token_type_ids=None, position_ids=None, \
+                k_input_ids_list=None, k_mask=None, k_attention_mask_list=None,
+                k_token_type_ids_list=None, k_position_ids=None, label=None, start_id=None):
+
+        outputs = self.roberta(input_ids=input_ids, attention_mask=attention_mask,
+                                token_type_ids=token_type_ids, position_ids=position_ids)
+        original_text_output = outputs[0]  # batch L d
+
+        if len(start_id.shape) == 3:
+            sub_start_id, obj_start_id = start_id.split(1, dim=1) # split to 2, each is 1
+            subj_output = torch.bmm(sub_start_id, original_text_output)
+            obj_output = torch.bmm(obj_start_id, original_text_output)
+            entity_vec = torch.cat([subj_output.squeeze(1), obj_output.squeeze(1)], dim=1)
+            logits = self.classifier(entity_vec)
+
+            if label is not None:
+                loss = self.loss(logits.view(-1, self.num_labels), label.view(-1).to(torch.long))
+                return logits, loss
+            else:
+                return logits
+        else:
+            raise ValueError("the entity index is wrong")
+
+
+
+class RobertaForSequenceClassification(BackbonePreTrainedModel):
+
+    def __init__(self, config):
+        super(RobertaForSequenceClassification, self).__init__(config)
+        self.num_labels = config.num_labels
+        config.add_pooling_layer = False
+
+        self.roberta = BackboneModel(config)
+        self.classifier = RobertaOutputLayerSequenceClassification(config)
+
+        self.init_weights()
+
+    def forward(self, input_ids=None, attention_mask=None, token_type_ids=None, position_ids=None,
+                k_input_ids_list=None, k_mask=None, k_attention_mask_list=None,
+                k_token_type_ids_list=None, k_position_ids=None, labels=None,):
+
+        outputs = self.roberta(input_ids, attention_mask=attention_mask,
+            token_type_ids=token_type_ids, position_ids=position_ids)
+        sequence_output = outputs[0]
+        logits = self.classifier(sequence_output)
+
+        if labels is not None:
+            if self.num_labels == 1:
+                #  We are doing regression
+                loss_fct = nn.MSELoss()
+                loss = loss_fct(logits.view(-1), labels.view(-1))
+            else:
+                loss_fct = nn.CrossEntropyLoss(reduction='mean')
+                loss = loss_fct(logits.view(-1, self.num_labels), labels.view(-1))
+
+            return logits, loss
+        else:
+            return logits
+
+
+
+# ---------------------------------------------------------------------
+class KFormersForEntityTyping(BackbonePreTrainedModel):  # 这个不能继承一个类吧？两个？
     def __init__(self, config, config_k, backbone_knowledge_dict):
-        super(KFormersRobertaForEntityTyping, self).__init__(config)
+        super(KFormersForEntityTyping, self).__init__(config)
         self.num_labels = config.num_labels
         # self.num_labels = 113
         # config.num_labels = 113
@@ -264,7 +393,7 @@ class KFormersRobertaForEntityTyping(BackbonePreTrainedModel):  # 这个不能�
 
         self.kformers = KFormersModel(config, config_k, backbone_knowledge_dict)
         config.in_hidden_size = config.hidden_size
-        self.classifier = RobertaClassification(config)
+        self.classifier = RobertaOutputLayerEntityTyping(config)
 
         self.loss = nn.BCEWithLogitsLoss(reduction='mean')
         self.init_weights()
@@ -287,45 +416,16 @@ class KFormersRobertaForEntityTyping(BackbonePreTrainedModel):  # 这个不能�
             return logits
 
 
-class RobertaForEntityTyping(BackbonePreTrainedModel):  # 这个不能继承一个类吧？两个？
-    def __init__(self, config):
-        super(RobertaForEntityTyping, self).__init__(config)
-        self.num_labels = config.num_labels
-        config.add_pooling_layer = False
 
-        self.roberta = BackboneModel(config)
-        config.in_hidden_size = config.hidden_size
-        self.classifier = RobertaClassification(config)
-
-        self.loss = nn.BCEWithLogitsLoss(reduction='mean')
-        self.init_weights()
-
-    def forward(self, input_ids=None, attention_mask=None, token_type_ids=None, position_ids=None, \
-                k_input_ids_list=None, k_mask=None, k_attention_mask_list=None,
-                k_token_type_ids_list=None, k_position_ids=None, label=None, start_id=None):
-        outputs = self.roberta(input_ids=input_ids, attention_mask=attention_mask,
-                                token_type_ids=token_type_ids, position_ids=position_ids)
-        original_text_output = outputs[0]  # batch L d
-        start_id = start_id.unsqueeze(1)  # batch 1 L
-        entity_vec = torch.bmm(start_id, original_text_output).squeeze(1)  # batch d
-        logits = self.classifier(entity_vec)
-        if label is not None:
-            loss = self.loss(logits.view(-1, self.num_labels), label.view(-1, self.num_labels))
-            return logits, loss
-        else:
-            return logits
-
-
-class KFormersRobertaRelationClassification(BackbonePreTrainedModel):  # 这个不能继承一个类吧？两个？
+class KFormersForRelationClassification(BackbonePreTrainedModel):  # 这个不能继承一个类吧？两个？
     def __init__(self, config, config_k, backbone_knowledge_dict):
-        super(KFormersRobertaRelationClassification, self).__init__(config)
+        super(KFormersForRelationClassification, self).__init__(config)
         self.num_labels = config.num_labels
         # self.num_labels = 113
         # config.num_labels = 113
         config.add_pooling_layer = False
 
         self.kformers = KFormersModel(config, config_k, backbone_knowledge_dict)
-        config.in_hidden_size = config.hidden_size * 2
         self.output_layer = RobertaOutputLayerRelationClassification(config)
 
         self.loss = nn.CrossEntropyLoss(reduction='mean')
@@ -342,9 +442,7 @@ class KFormersRobertaRelationClassification(BackbonePreTrainedModel):  # 这个�
 
         if len(start_id.shape) == 3:
             sub_start_id, obj_start_id = start_id.split(1, dim=1)  # split to 2, each is 1
-            sub_start_id = sub_start_id
             subj_output = torch.bmm(sub_start_id, original_text_output)
-            obj_start_id = obj_start_id
             obj_output = torch.bmm(obj_start_id, original_text_output)
             entity_vec = torch.cat([subj_output.squeeze(1), obj_output.squeeze(1)], dim=1)
             logits = self.output_layer(entity_vec)
@@ -358,40 +456,41 @@ class KFormersRobertaRelationClassification(BackbonePreTrainedModel):  # 这个�
             raise ValueError("the entity index is wrong")
 
 
-class RobertaForRelationClassification(BackbonePreTrainedModel):  # 这个不能继承一个类吧？两个？
-    def __init__(self, config):
-        super(RobertaForRelationClassification, self).__init__(config)
+
+class KFormersForSequenceClassification(BackbonePreTrainedModel):
+
+    def __init__(self, config, config_k, backbone_knowledge_dict):
+        super(KFormersForSequenceClassification, self).__init__(config)
         self.num_labels = config.num_labels
         config.add_pooling_layer = False
 
-        self.roberta = BackboneModel(config)
-        config.in_hidden_size = config.hidden_size * 2
-        self.classifier = RobertaOutputLayer(config)
+        self.kformers = KFormersModel(config, config_k, backbone_knowledge_dict)
+        self.classifier = RobertaOutputLayerSequenceClassification(config)
 
-        self.loss = nn.CrossEntropyLoss(reduction='mean')
         self.init_weights()
 
-    def forward(self, input_ids=None, attention_mask=None, token_type_ids=None, position_ids=None, \
+    def forward(self, input_ids=None, attention_mask=None, token_type_ids=None, position_ids=None,
                 k_input_ids_list=None, k_mask=None, k_attention_mask_list=None,
-                k_token_type_ids_list=None, k_position_ids=None, label=None, start_id=None):
+                k_token_type_ids_list=None, k_position_ids=None, labels=None,):
 
-        outputs = self.roberta(input_ids=input_ids, attention_mask=attention_mask,
-                                token_type_ids=token_type_ids, position_ids=position_ids)
-        original_text_output = outputs[0]  # batch L d
+        outputs = self.kformers(input_ids, attention_mask=attention_mask,
+                                token_type_ids=token_type_ids, position_ids=position_ids,
+                               k_input_ids_list=k_input_ids_list, k_attention_mask_list=k_attention_mask_list,
+                               k_token_type_ids_list=k_token_type_ids_list, k_position_ids=k_position_ids)
 
-        if len(start_id.shape) == 3:
-            sub_start_id, obj_start_id = start_id.split(1, dim=1) # split to 2, each is 1
-            sub_start_id = sub_start_id
-            subj_output = torch.bmm(sub_start_id, original_text_output)
-            obj_start_id = obj_start_id
-            obj_output = torch.bmm(obj_start_id, original_text_output)
-            entity_vec = torch.cat([subj_output.squeeze(1), obj_output.squeeze(1)], dim=1)
-            logits = self.classifier(entity_vec)
+        sequence_output = outputs[0]
+        logits = self.classifier(sequence_output)
 
-            if label is not None:
-                loss = self.loss(logits.view(-1, self.num_labels), label.view(-1).to(torch.long))
-                return logits, loss
+        if labels is not None:
+            if self.num_labels == 1:
+                #  We are doing regression
+                loss_fct = nn.MSELoss()
+                loss = loss_fct(logits.view(-1), labels.view(-1))
             else:
-                return logits
+                loss_fct = nn.CrossEntropyLoss(reduction='mean')
+                loss = loss_fct(logits.view(-1, self.num_labels), labels.view(-1))
+
+            return logits, loss
         else:
-            raise ValueError("the entity index is wrong")
+            return logits
+

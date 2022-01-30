@@ -104,14 +104,14 @@ def quality_control_metric(preds, labels, positive_label=1):
         roc_auc = auc(fpr, tpr)
         pr_auc = auc(recall, precision)
         return {
-            "roc_auc": roc_auc,
-            "pr_auc": pr_auc
+            "roc_auc": round(roc_auc, 4),
+            "pr_auc": round(pr_auc, 4)
         }
 
     def accuracy(preds, labels):
         outputs = np.argmax(preds, axis=1)
         acc = np.sum(outputs == labels) / len(labels)
-        return {"accuracy": acc}
+        return {"accuracy": round(acc, 4)}
 
     t1 = _auc(preds, labels)
     t2 = accuracy(preds, labels)
@@ -123,7 +123,7 @@ def quality_control_metric(preds, labels, positive_label=1):
 def simple_accuracy(preds, labels):
     preds = np.argmax(preds, axis=-1)
     acc = (preds == labels).mean()
-    return {"acc": acc}
+    return {"accuracy": round(acc, 4)}
 
 
 def auc_metrics(preds, labels):
@@ -159,58 +159,6 @@ def pearson_and_spearman(preds, labels):
         "corr": (pearson_corr + spearman_corr) / 2,
     }
 
-
-# def entity_typing_accuracy(out, l):
-#     def f1(p, r):
-#         if r == 0.:
-#             return 0.
-#         return 2 * p * r / float(p + r)
-#
-#     def loose_macro(true, pred):
-#         num_entities = len(true)
-#         p = 0.
-#         r = 0.
-#         for true_labels, predicted_labels in zip(true, pred):
-#             if len(predicted_labels) > 0:
-#                 p += len(set(predicted_labels).intersection(set(true_labels))) / float(len(predicted_labels))
-#             if len(true_labels):
-#                 r += len(set(predicted_labels).intersection(set(true_labels))) / float(len(true_labels))
-#         precision = p / num_entities
-#         recall = r / num_entities
-#         return precision, recall, f1(precision, recall)
-#
-#     def loose_micro(true, pred):
-#         num_predicted_labels = 0.
-#         num_true_labels = 0.
-#         num_correct_labels = 0.
-#         for true_labels, predicted_labels in zip(true, pred):
-#             num_predicted_labels += len(predicted_labels)
-#             num_true_labels += len(true_labels)
-#             num_correct_labels += len(set(predicted_labels).intersection(set(true_labels)))
-#         if num_predicted_labels > 0:
-#             precision = num_correct_labels / num_predicted_labels
-#         else:
-#             precision = 0.
-#         recall = num_correct_labels / num_true_labels
-#         return precision, recall, f1(precision, recall)
-#
-#     cnt = 0
-#     y1 = []
-#     y2 = []
-#     for x1, x2 in zip(out, l):
-#         yy1 = []
-#         yy2 = []
-#         for i in range(len(x1)):
-#             if x1[i] > 0:
-#                 yy1.append(i)
-#             if x2[i] > 0:
-#                 yy2.append(i)
-#         y1.append(yy1)
-#         y2.append(yy2)
-#         cnt += set(yy1) == set(yy2)
-#     # return cnt, loose_micro(y2, y1), loose_macro(y2, y1)
-#     rel = {'count': cnt, 'accuracy': acc, 'micro F1': loose_micro(y2, y1), 'macro F1': loose_macro(y2, y1)}
-#     return rel
 
 
 def entity_typing_accuracy(out, l):
@@ -266,44 +214,11 @@ def entity_typing_accuracy(out, l):
         y2.append(yy2)
         cnt += set(yy1) == set(yy2)  # 要完全预测对
     acc = round(cnt / l.shape[0], 4)
-    rel = {'count': cnt, 'accuracy': acc, 'micro F1': loose_micro(y2, y1), 'macro F1': loose_macro(y2, y1)}
+    rel = {'count': cnt, 'accuracy': acc, 'micro_F1': loose_micro(y2, y1), 'macro_F1': loose_macro(y2, y1)}
     return rel
 
 
-# def micro_f1_tacred(preds, labels, NO_RELATION=-1):
-#     correct_by_relation = Counter()
-#     guessed_by_relation = Counter()
-#     gold_by_relation = Counter()
-#
-#     for guess, gold in zip(preds, labels):
-#         if gold == NO_RELATION and guess == NO_RELATION:
-#             pass
-#         elif gold == NO_RELATION and guess != NO_RELATION:
-#             guessed_by_relation[guess] += 1
-#         elif gold != NO_RELATION and guess == NO_RELATION:
-#             gold_by_relation[gold] += 1
-#         elif gold != NO_RELATION and guess != NO_RELATION:
-#             guessed_by_relation[guess] += 1
-#             gold_by_relation[gold] += 1
-#             if gold == guess:
-#                 correct_by_relation[guess] += 1
-#
-#     prec_micro = 1.0
-#     if sum(guessed_by_relation.values()) > 0:
-#         prec_micro = float(sum(correct_by_relation.values())) / float(sum(guessed_by_relation.values()))
-#
-#     recall_micro = 0.0
-#     if sum(gold_by_relation.values()) > 0:
-#         recall_micro = float(sum(correct_by_relation.values())) / float(sum(gold_by_relation.values()))
-#
-#     f1_micro = 0.0
-#     if prec_micro + recall_micro > 0.0:
-#         f1_micro = 2.0 * prec_micro * recall_micro / (prec_micro + recall_micro)
-#
-#     return {"pre": round(prec_micro, 4), "rec": round(recall_micro, 4), "micro F1": [round(f1_micro, 4)]}
-
-
-def relation_metric(pred_result, labels, na_id):
+def relation_classification_metric(pred_result, labels, na_id=-1):
     correct = 0
     total = len(labels)
     correct_positive = 0
@@ -332,55 +247,28 @@ def relation_metric(pred_result, labels, na_id):
         micro_f1 = 2 * micro_p * micro_r / (micro_p + micro_r)
     except:
         micro_f1 = 0
-    result = {'acc': acc, 'micro_p': micro_p,
-              'micro_r': micro_r, 'micro_f1': micro_f1}
+    result = {'accuracy': acc, 'micro_p': micro_p,
+              'micro_r': micro_r, 'micro_F1': [micro_f1]}
     return result
 
 
 def compute_metrics(task_name, preds, labels):
     assert len(preds) == len(labels)
-    if task_name == "cola":
-        return matthews_corrcoef(labels, preds)
-    elif task_name == "sst2":
-        a = {}
+    if task_name == "sst2":
         t1 = simple_accuracy(preds, labels)
-        a['accuracy'] = t1
-        return a
-    elif task_name == "mrpc":
-        return acc_and_f1(preds, labels)
-    elif task_name == "sts-b":
-        return pearson_and_spearman(preds, labels)
-    elif task_name == "qqp":
-        return acc_and_f1(preds, labels)
-    elif task_name == "mnli":
-        return simple_accuracy(preds, labels)
-    elif task_name == "mnli-mm":
-        return simple_accuracy(preds, labels)
-    elif task_name == "qnli":
-        return simple_accuracy(preds, labels)
-    elif task_name == "rte":
-        return simple_accuracy(preds, labels)
-    elif task_name == "wnli":
-        return simple_accuracy(preds, labels)
-    elif task_name == 'ads':
-        t1 = auc_metrics(preds, labels)
-        t2 = simple_accuracy(preds, labels)
-        t1['accuracy'] = t2
         return t1
+    elif task_name == 'eem':
+        return quality_control_metric(preds, labels)
     elif task_name == 'open_entity':
         return entity_typing_accuracy(preds, labels)
     elif task_name == 'figer':
         return entity_typing_accuracy(preds, labels)
     elif task_name == 'tacred':
         from data_utils import TACRED_relations
-        NO_RELATION = TACRED_relations['NA']
-        return micro_f1_tacred(preds, labels, NO_RELATION)
+        NO_RELATION = TACRED_relations.index('NA')
+        return relation_classification_metric(preds, labels, NO_RELATION)
     elif task_name == 'fewrel':
-        return micro_f1_tacred(preds, labels)
-    elif task_name == 'quality_control':
-        return quality_control_metric(preds, labels)
-    elif task_name == "ads-multitask":
-        return auc_metrics(preds, labels)
+        return relation_classification_metric(preds, labels)
     else:
         raise KeyError(task_name)
 

@@ -22,7 +22,7 @@ from transformers.optimization import AdamW, get_linear_schedule_with_warmup
 
 from parameters import parse_args
 from utils import compute_metrics
-from data_utils import output_modes, processors
+from data_utils import output_modes, processors, final_metric
 
 logger = logging.getLogger(__name__)
 
@@ -225,28 +225,40 @@ def do_train(args, model, train_dataset, val_dataset, test_dataset=None):
             loss = 0.0
             model.train()
             batch = tuple(t.to(args.device) for t in batch)
+
+            if args.task_name in ['openentity', 'figer', 'fewrel', 'tacred']:
+                input_ids, attention_mask, token_type_ids, start_id = batch[0], batch[1], batch[2], batch[3]
+                k_input_ids, k_mask, k_attention_mask, k_token_type_ids = batch[-5], batch[-4], batch[-3], batch[-2]
+                labels = batch[-1]
+            else:
+                input_ids, attention_mask, token_type_ids = batch[0], batch[1], batch[2]
+                k_input_ids, k_mask, k_attention_mask, k_token_type_ids = batch[-5], batch[-4], batch[-3], batch[-2]
+                labels = batch[-1]
+
             if args.add_knowledge:
-                inputs = {"input_ids": batch[0],
-                          "attention_mask": batch[1],
-                          "token_type_ids": batch[2] if args.backbone_model_type in ['bert', 'unilm'] else None,
-                          "start_id": batch[3],
-                          "k_input_ids_list": batch[-5],
-                          "k_mask": batch[-4],
-                          "k_attention_mask_list": batch[-3],
-                          "k_token_type_ids_list": batch[-2] if args.knowledge_model_type in ['distilbert'] else None,
-                          "label": batch[-1],
+                inputs = {"input_ids": input_ids,
+                          "attention_mask": attention_mask,
+                          "token_type_ids": token_type_ids if args.backbone_model_type in ['bert', 'unilm'] else None,
+                          "k_input_ids_list": k_input_ids,
+                          "k_mask": k_mask,
+                          "k_attention_mask_list": k_attention_mask,
+                          "k_token_type_ids_list": k_token_type_ids if args.knowledge_model_type in ['distilbert'] else None,
+                          "labels": labels,
                           }
             else:
-                inputs = {"input_ids": batch[0],
-                          "attention_mask": batch[1],
-                          "token_type_ids": batch[2],
-                          "start_id": batch[3],
+                inputs = {"input_ids": input_ids,
+                          "attention_mask": attention_mask,
+                          "token_type_ids": token_type_ids if args.backbone_model_type in ['bert', 'unilm'] else None,
                           "k_input_ids_list": None,
                           "k_mask": None,
                           "k_attention_mask_list": None,
                           "k_token_type_ids_list": None,
-                          "label": batch[-1],
+                          "labels": labels,
                           }
+
+            if args.task_name in ['openentity', 'figer', 'fewrel', 'tacred']:
+                inputs['start_id'] = start_id
+
             _, batch_loss = model(**inputs)
             if args.n_gpu > 1:
                 batch_loss = batch_loss.mean()  # mean() to average on multi-gpu parallel training
@@ -266,20 +278,22 @@ def do_train(args, model, train_dataset, val_dataset, test_dataset=None):
                 model.zero_grad()
                 global_step += 1
             if args.local_rank in [-1, 0] and args.logging_steps > 0 and global_step % args.logging_steps == 0:
-                logger.info(
-                    "epoch {}, step {}, global_step {}, train_loss: {:.5f}".format(epoch, step + 1, global_step, loss))
-            if args.local_rank in [-1,
-                                   0] and args.eval_steps > 0 and global_step > 0 and global_step % args.eval_steps == 0:
+                logger.info("epoch {}, step {}, global_step {}, train_loss: {:.5f}".format(epoch, step + 1, global_step, loss))
+            if args.local_rank in [-1, 0] and args.eval_steps > 0 and global_step > 0 and global_step % args.eval_steps == 0:
                 eval_results = do_eval(model, args, val_dataset, global_step)
                 test_results = do_eval(model, args, test_dataset, global_step)
-                if eval_results['micro F1'][-1] > best_dev_result:  # f1
-                    best_dev_result = eval_results['micro F1'][-1]
-                    logger.info(
-                        'epoch: {}, global step: {}, dev results: {}**'.format(epoch, global_step, eval_results))
+                t = eval_results[final_metric[args.task_name]]
+                if t > best_dev_result:  # f1
+                    best_dev_result = eval_results[final_metric[args.task_name]]
+                    logger.info('epoch: {}, global step: {}, dev results: {}**'.format(epoch, global_step, eval_results))
+                    print('epoch: {}, global step: {}, dev results: {}**'.format(epoch, global_step, eval_results))
                     logger.info('epoch: {}, global step: {}, test results: {}'.format(epoch, global_step, test_results))
+                    print('epoch: {}, global step: {}, test results: {}'.format(epoch, global_step, test_results))
                 else:
                     logger.info('epoch: {}, global step: {}, dev results: {}'.format(epoch, global_step, eval_results))
+                    print('epoch: {}, global step: {}, dev results: {}'.format(epoch, global_step, eval_results))
                     logger.info('epoch: {}, global step: {}, test results: {}'.format(epoch, global_step, test_results))
+                    print('epoch: {}, global step: {}, test results: {}'.format(epoch, global_step, test_results))
             if 0 < args.max_steps < global_step:
                 epoch_iterator.close()
                 break
@@ -288,13 +302,18 @@ def do_train(args, model, train_dataset, val_dataset, test_dataset=None):
         if args.local_rank in [-1, 0]:
             eval_results = do_eval(model, args, val_dataset, global_step=epoch)
             test_results = do_eval(model, args, test_dataset, global_step=epoch)
-            if eval_results['micro F1'][-1] > best_dev_result:  # f1
-                best_dev_result = eval_results['micro F1'][-1]
-                logger.info('epoch: {}, global step: {}, dev results: {}**'.format(epoch, global_step, eval_results))
-                logger.info('epoch: {}, global step: {}, test results: {}'.format(epoch, global_step, test_results))
+            t = eval_results[final_metric[args.task_name]]
+            if t > best_dev_result:  # f1
+                best_dev_result = eval_results[final_metric[args.task_name]]
+                logger.info('epoch: {},  dev results: {}**'.format(epoch, eval_results))
+                print('epoch: {}, dev results: {}**'.format(epoch, eval_results))
+                logger.info('epoch: {}, test results: {}'.format(epoch, test_results))
+                print('epoch: {}, test results: {}'.format(epoch, test_results))
             else:
-                logger.info('epoch: {}, global step: {}, dev results: {}'.format(epoch, global_step, eval_results))
-                logger.info('epoch: {}, global step: {}, test results: {}'.format(epoch, global_step, test_results))
+                logger.info('epoch: {}, dev results: {}'.format(epoch, eval_results))
+                print('epoch: {}, dev results: {}'.format(epoch, eval_results))
+                logger.info('epoch: {}, test results: {}'.format(epoch, test_results))
+                print('epoch: {}, test results: {}'.format(epoch, test_results))
 
         if 0 < args.max_steps < global_step:
             train_iterator.close()
@@ -312,48 +331,57 @@ def do_eval(model, args, val_dataset, global_step):
     for step, batch in enumerate(eval_iterator):
         # if step > 3:
         #     break
+
         model.eval()
         batch = tuple(t.to(args.device) for t in batch)
         with torch.no_grad():
-            label = batch[-1]
+
+            if args.task_name in ['openentity', 'figer', 'fewrel', 'tacred']:
+                input_ids, attention_mask, token_type_ids, start_id = batch[0], batch[1], batch[2], batch[3]
+                k_input_ids, k_mask, k_attention_mask, k_token_type_ids = batch[-5], batch[-4], batch[-3], batch[-2]
+                labels = batch[-1]
+            else:
+                input_ids, attention_mask, token_type_ids = batch[0], batch[1], batch[2]
+                k_input_ids, k_mask, k_attention_mask, k_token_type_ids = batch[-5], batch[-4], batch[-3], batch[-2]
+                labels = batch[-1]
+
             if args.add_knowledge:
-                inputs = {"input_ids": batch[0],
-                          "attention_mask": batch[1],
-                          "token_type_ids": batch[2] if args.backbone_model_type in ['bert', 'unilm'] else None,
-                          "start_id": batch[3],
-                          "k_input_ids_list": batch[-5],
-                          "k_mask": batch[-4],
-                          "k_attention_mask_list": batch[-3],
-                          "k_token_type_ids_list": batch[-2] if args.knowledge_model_type in ['distilbert'] else None,
-                          "label": None,
+                inputs = {"input_ids": input_ids,
+                          "attention_mask": attention_mask,
+                          "token_type_ids": token_type_ids if args.backbone_model_type in ['bert', 'unilm'] else None,
+                          "k_input_ids_list": k_input_ids,
+                          "k_mask": k_mask,
+                          "k_attention_mask_list": k_attention_mask,
+                          "k_token_type_ids_list": k_token_type_ids if args.knowledge_model_type in [
+                              'distilbert'] else None,
+                          "labels": None,
                           }
             else:
-                inputs = {"input_ids": batch[0],
-                          "attention_mask": batch[1],
-                          "token_type_ids": batch[2],
-                          "start_id": batch[3],
+                inputs = {"input_ids": input_ids,
+                          "attention_mask": attention_mask,
+                          "token_type_ids": token_type_ids if args.backbone_model_type in ['bert', 'unilm'] else None,
                           "k_input_ids_list": None,
                           "k_mask": None,
                           "k_attention_mask_list": None,
                           "k_token_type_ids_list": None,
-                          "label": None,
+                          "labels": None,
                           }
+
+            if args.task_name in ['openentity', 'figer', 'fewrel', 'tacred']:
+                inputs['start_id'] = start_id
+
             logits = model(**inputs)
             if preds is None:
                 preds = logits.detach().cpu().numpy()
-                out_label_ids = label.detach().cpu().numpy()
+                out_label_ids = labels.detach().cpu().numpy()
             else:
                 preds = np.append(preds, logits.detach().cpu().numpy(), axis=0)
-                out_label_ids = np.append(out_label_ids, label.detach().cpu().numpy(), axis=0)
+                out_label_ids = np.append(out_label_ids, labels.detach().cpu().numpy(), axis=0)
 
     if args.task_name in ['open_entity',  'figer']:
         pass
     elif args.task_name in ['tacred', 'fewrel']:
         preds = np.argmax(preds, axis=1)
-    # elif args.output_mode == "classification":
-    #     preds = np.argmax(preds, axis=1)
-    # elif args.output_mode == "regression":
-    #     preds = np.squeeze(preds)
 
     result = compute_metrics(args.task_name, preds, out_label_ids)
     return result
@@ -370,11 +398,14 @@ def set_seed(args):
 def main():
     args = parse_args()
     if args.task_name in ['open_entity', 'figer']:
-        from KFormers_roberta_distilbert_modeling import KFormersRobertaForEntityTyping as KFormersDownstreamModel
+        from KFormers_roberta_distilbert_modeling import KFormersForEntityTyping as KFormersDownstreamModel
         from KFormers_roberta_distilbert_modeling import RobertaForEntityTyping as BaselineDownstreamModel
     elif args.task_name in ['tacred', 'fewrel']:
-        from KFormers_roberta_distilbert_modeling import KFormersRobertaRelationClassification as KFormersDownstreamModel
+        from KFormers_roberta_distilbert_modeling import KFormersForRelationClassification as KFormersDownstreamModel
         from KFormers_roberta_distilbert_modeling import RobertaForRelationClassification as BaselineDownstreamModel
+    elif args.task_name in ['sst2', 'eem']:
+        from KFormers_roberta_distilbert_modeling import RobertaForSequenceClassification as BaselineDownstreamModel
+        from KFormers_roberta_distilbert_modeling import KFormersForSequenceClassification as KFormersDownstreamModel
     else:
         KFormersDownstreamModel = None
         BaselineDownstreamModel = None
@@ -413,8 +444,11 @@ def main():
     knowledge_tokenizer = k_tokenizer_class.from_pretrained(args.knowledge_model_name_or_path)
 
     # get num_label
-    processor = processors[args.task_name](tokenizer=backbone_tokenizer, k_tokenizer=knowledge_tokenizer,
-                                           negative_sample=args.negative_sample)
+    if args.task_name == 'tacred':
+        processor = processors[args.task_name](tokenizer=backbone_tokenizer, k_tokenizer=knowledge_tokenizer, negative_sample=args.negative_sample)
+    else:
+        processor = processors[args.task_name](tokenizer=backbone_tokenizer, k_tokenizer=knowledge_tokenizer)
+    # processor = processors[args.task_name](tokenizer=backbone_tokenizer, k_tokenizer=knowledge_tokenizer)
     label_list = processor.get_labels()
     num_labels = len(label_list)
     args.num_labels = num_labels
@@ -429,14 +463,20 @@ def main():
     model.to(device)
 
     logger.info("Training/evaluation parameters %s", args)
+    print("Training/evaluation parameters %s", args)
     # ## Training
     if args.mode == 'train':
         from data_utils import load_and_cache_examples
-        test_dataset = load_and_cache_examples(args, args.task_name, backbone_tokenizer, knowledge_tokenizer,
-                                               dataset_type='test', evaluate=True)
-        val_dataset = load_and_cache_examples(args, args.task_name, backbone_tokenizer, knowledge_tokenizer,
+        if args.task_name in ['sst2', 'eem']:
+            # there is no test data in sst2(glue) and eem
+            test_dataset = load_and_cache_examples(args, processor, backbone_tokenizer, knowledge_tokenizer,
+                                                   dataset_type='dev', evaluate=True)
+        else:
+            test_dataset = load_and_cache_examples(args, processor, backbone_tokenizer, knowledge_tokenizer,
+                                                   dataset_type='test', evaluate=True)
+        val_dataset = load_and_cache_examples(args, processor, backbone_tokenizer, knowledge_tokenizer,
                                               dataset_type='dev', evaluate=True)
-        train_dataset = load_and_cache_examples(args, args.task_name, backbone_tokenizer, knowledge_tokenizer,
+        train_dataset = load_and_cache_examples(args, processor, backbone_tokenizer, knowledge_tokenizer,
                                                 dataset_type='train', evaluate=False)
         do_train(args, model, train_dataset, val_dataset, test_dataset)
 
