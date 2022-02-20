@@ -1,4 +1,2 @@
 #### the command of pretraining K-module
-nohup python run_KFormers.py  --model_type  KModule  --model_type roberta   --model_name_or_path  roberta-large   --max_seq_length 128  --train_batch_size 64   --valid_batch_size 512   --max_steps 1  --epochs 3  --learning_rate 5e-5  --eval_steps -1    --fp16 True   --data_dir ../data/gluedata/SST2  --output_dir AM_146   >  log.KFormers.roberta-large.distilbert.SST2.64.5e-5.128.KFormers &
-
---data_dir, --model_type, --model_name_or_path, --task_name, --bert_model
+nohup python run_pretrain_kformers.py   --do_train  --model_type roberta-base  --model_name_or_path  roberta-base  --data_dir  ../data\knowledge\pretrain\wikidata_description  --max_seq_length 32  --num_neg_sample 10  --entity_emb_size 32  --per_gpu_train_batch_size 128  --per_gpu_eval_batch_size 512  --gradient_accumulation_steps 1  --learning_rate 3e-5  --weight_decay 0.0  --num_train_epochs 3  --max_steps 1  --warmup_steps 1  --save_steps 1  --eval_steps 1  --seed  3407  --fp16

@@ -13,15 +13,15 @@ logger = logging.getLogger(__name__)
 
 
 
-def load_and_cache_examples(args, processor, tokenizer, k_tokenizer, dataset_type, evaluate=False):
+def load_and_cache_examples(args, processor, tokenizer, dataset_type, evaluate=False):
     # dataset_type: train, dev, test
     if args.local_rank not in [-1, 0] and not evaluate:
         torch.distributed.barrier()  # Make sure only the first process in distributed training process the dataset, and the others will use the cache
     # Load data features from cache or dataset file
-    cached_features_file = os.path.join(args.data_dir, 'cached_pretrain_{}_{}_{}_{}'.format(
-        args.model_type, args.backbone_model_type,
+    cached_features_file = os.path.join(args.data_dir, 'cached_pretrain_{}_{}_{}'.format(
+        args.model_type,
         dataset_type,
-        str(args.backbone_seq_length),
+        str(args.max_seq_length),
         ))
     if os.path.exists(cached_features_file):
         logger.warning("===> Loading features from cached file %s", cached_features_file)
@@ -34,7 +34,7 @@ def load_and_cache_examples(args, processor, tokenizer, k_tokenizer, dataset_typ
         else:
             examples = processor.get_train_examples(args.data_dir, dataset_type)
 
-        features = convert_examples_to_features(examples, args.max_seq_length, tokenizer,
+        features =  convert_examples_to_features(examples, args.max_seq_length, tokenizer,
                                                 cls_token_at_end=bool(args.model_type in ['xlnet']),
                                                 # xlnet has a cls token at the end
                                                 cls_token=tokenizer.cls_token,
@@ -53,11 +53,10 @@ def load_and_cache_examples(args, processor, tokenizer, k_tokenizer, dataset_typ
     if args.local_rank == 0 and not evaluate:
         torch.distributed.barrier()  # Make sure only the first process in distributed training process the dataset, and the others will use the cache
 
-    all_input_ids = features.input_ids
-    all_input_mask = features.input_mask
-    all_segment_ids = features.segment_ids
-
-    all_label_ids = features.label_id
+    all_input_ids = torch.tensor([f.input_ids for f in features], dtype=torch.long)
+    all_input_mask = torch.tensor([f.input_mask for f in features], dtype=torch.long)
+    all_segment_ids = torch.tensor([f.segment_ids for f in features], dtype=torch.long)
+    all_label_ids = torch.tensor([f.label_id for f in features], dtype=torch.long)
 
     dataset = TensorDataset(all_input_ids, all_input_mask, all_segment_ids,
                             all_label_ids)
@@ -81,19 +80,17 @@ def convert_examples_to_features(examples,
                                 mask_padding_with_zero=True):
 
     features = []
+    max_num_tokens = origin_seq_length - tokenizer.num_special_tokens_to_add(pair=False)
     for (ex_index, example) in enumerate(examples):
         if ex_index % 10000 == 0:
             logger.info("Writing example %d of %d" % (ex_index, len(examples)))
         # ==== backbone ====
 
         text_a, entity_label = example.text_a, example.entity_label
+        text_a = text_a[: max_num_tokens]
 
-        tokens = tokenizer.tokenize(text_a)
-        tokens = [cls_token] + tokens + [sep_token]
-        tokens = tokens[: origin_seq_length]
-
-        segment_ids = [sequence_a_segment_id] * len(tokens)
-        input_ids = tokenizer.convert_tokens_to_ids(tokens)
+        input_ids = tokenizer.build_inputs_with_special_tokens(token_ids_0=text_a, token_ids_1=None)
+        segment_ids = [sequence_a_segment_id] * len(input_ids)
         input_mask = [1 if mask_padding_with_zero else 0] * len(input_ids)
 
         # Zero-pad up to the sequence length.
@@ -114,7 +111,7 @@ def convert_examples_to_features(examples,
         if ex_index < 10:
             logger.info("*** Example ***")
             logger.info("guid: %s" % (example.guid))
-            logger.info("tokens: %s" % " ".join([str(x) for x in tokens]))
+            logger.info("tokens: %s" % " ".join([str(x) for x in text_a]))
             logger.info("input_ids: %s" % " ".join([str(x) for x in input_ids]))
             logger.info("input_mask: %s" % " ".join([str(x) for x in input_mask]))
             logger.info("segment_ids: %s" % " ".join([str(x) for x in segment_ids]))
@@ -133,28 +130,19 @@ def convert_examples_to_features(examples,
 
 
 class InputExample(object):
-    def __init__(self, guid, text_a, text_b=None, label=None):
+    def __init__(self, guid, text_a, text_b=None, entity_label=None):
         self.guid = guid
         self.text_a = text_a
         self.text_b = text_b
-        self.label = label
+        self.entity_label = entity_label
 
 
 
 class InputFeatures(object):
-    def __init__(self, input_ids=None, input_mask=None, segment_ids=None,
-                 start_id=None,
-                 k_input_ids=None, k_mask=None, k_input_mask=None, k_segment_ids=None, label_id=None):
+    def __init__(self, input_ids=None, input_mask=None, segment_ids=None, label_id=None):
         self.input_ids = input_ids
         self.input_mask = input_mask
         self.segment_ids = segment_ids
-        self.start_id = start_id
-
-        self.k_input_ids = k_input_ids
-        self.k_mask = k_mask
-        self.k_input_mask = k_input_mask
-        self.k_segment_ids = k_segment_ids
-
         self.label_id = label_id
 
 
@@ -190,10 +178,9 @@ class DataProcessor(object):
 
 
 class EntityPredictionProcessor(DataProcessor):
-    def __init__(self, tokenizer=None, k_tokenizer=None, description_num=None):
+    def __init__(self, data_dir=None, tokenizer=None):
         self.tokenizer = tokenizer
-        self.k_tokenizer = k_tokenizer
-        self.description_num = description_num
+        self.data_dir = data_dir
 
     def get_train_examples(self, data_dir, dataset_type=None):
         lines = self._read_tsv(os.path.join(data_dir, "train.tsv"))
@@ -204,31 +191,35 @@ class EntityPredictionProcessor(DataProcessor):
         return self._create_examples(lines, self.tokenizer)
 
     def get_labels(self):
-        """See base class."""
-        return [0, 1]
+        lines = self._read_tsv(os.path.join(self.data_dir, "all_wikidata5m_QIDs_name.txt"))
+        labels = list(set([x[0] for x in lines]))
+        return labels
 
     def _create_examples(self, lines, tokenizer, tokenizing_batch_size=32768):
         examples = []
         batch_input, label_list, first_index = [], [], 0
+        label_set = {k: v for v, k in enumerate(self.get_labels())}
         for (i, line) in enumerate(lines):
             first_index = i
-            if i == 0:
-                continue
-            description, label = line
+            # if i == 0:
+            #     continue
+            qid, name, description = line
+            label = label_set[qid]
+
             label_list.append(label)
             batch_input.append(description)
 
             if len(batch_input) >= tokenizing_batch_size:
                 tokenized_input = tokenizer.batch_encode_plus(batch_input, add_special_tokens=False)
                 t = tokenized_input['input_ids']  # 存在[]
-                examples.append(InputExample(guid=first_index, text_a=t, text_b=None, label=label_list))
-                batch_input = []
+                for j in range(len(label_list)):
+                    examples.append(InputExample(guid=first_index, text_a=t[j], text_b=None, entity_label=label_list[j]))
+                batch_input, label_list = [], []
         if len(batch_input) > 0:
             tokenized_input = tokenizer.batch_encode_plus(batch_input, add_special_tokens=False)
             t = tokenized_input['input_ids']  # 存在[]
-            examples.append(InputExample(guid=first_index, text_a=t, text_b=None, label=label_list))
+            for j in range(len(label_list)):
+                examples.append(InputExample(guid=first_index, text_a=t[j], text_b=None, entity_label=label_list[j]))
         logger.info(f"Finish creating of size {first_index+1}")
         return examples
-
-
 

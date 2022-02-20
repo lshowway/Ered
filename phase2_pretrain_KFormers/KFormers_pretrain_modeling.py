@@ -78,15 +78,18 @@ class KModulePretrainingModel(nn.Module):
     '''
     def __init__(self, config):
         super(KModulePretrainingModel, self).__init__()
+        self.config = config
 
         self.roberta = RobertaModel(config)
         self.entity_embeddings = EntityEmbeddings(config)
 
-        self.entity_predictions = EntityPredictionHead(config)
+        # self.entity_predictions = EntityPredictionHead(config)
         # 为什么要这么做？使用entity embedding初始化？？
         # self.entity_predictions.decoder.weight = self.entity_embeddings.entity_embeddings.weight
 
-        self.loss_fn = nn.BCEWithLogitsLoss()  # 对比损失
+        # self.loss_fn = nn.BCEWithLogitsLoss()  # 二值交叉熵
+        # self.loss_fn = nn.BCEWithLogitsLoss()  # 对比损失
+        self.loss_fn = nn.CrossEntropyLoss(ignore_index=-1, reduction='mean')  # 对比损失
 
         self.apply(self.init_weights)
 
@@ -109,21 +112,26 @@ class KModulePretrainingModel(nn.Module):
         description_ids,
         description_attention_mask,
         description_segment_ids,
-        entity_ids,
+        candidate_entities=None,
         entity_labels=None,  # 对比学习
     ):
         # model_dtype = next(self.parameters()).dtype  # for fp16 compatibility
 
-        description_representation = self.roberta(description_ids, description_segment_ids, description_attention_mask)
-        entity_embedding = self.entity_embeddings(entity_id)
+        description_representation = self.roberta(input_ids=description_ids,
+                                                  attention_mask=description_attention_mask,
+                                                  token_type_ids=description_segment_ids)
+        pooler_output = description_representation.pooler_output  # batch, 768
+        # 第一种，对齐到768维，也就是description的维度
+        entity_embedding = self.entity_embeddings(candidate_entities)
+        logits = torch.matmul(entity_embedding, pooler_output.unsqueeze(1).permute(0, 2, 1)).squeeze(-1) # batch N+1
 
-        rep = torch.cat([entity_embedding, description_representation])
-        logits = self.entity_predictions(rep)
-
+        # 第二种，对齐到entity embedding dimension
 
         if entity_labels is not None:
-            loss = self.loss_fn(logits, entity_labels)
-            return logits, loss
+            # 当label是0/1的时候，而不是index的时候，使用的是二值交叉熵
+            labels = torch.argmax(entity_labels, dim=-1).to(description_ids.device)
+            loss = self.loss_fn(logits, labels.view(-1))
+            return logits, loss, labels
         else:
             return logits
 
