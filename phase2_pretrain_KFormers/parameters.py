@@ -18,6 +18,8 @@ def get_args():
     # data config
     parser.add_argument("--data_dir", default="G:\D\MSRA\knowledge_aware\data\knowledge\pretrain\wikidata_description", type=str, required=False,
                         help="The input data dir. Should contain the .tsv files (or other data files) for the task.")
+    parser.add_argument('--output_dir', type=Path, default="output/")
+
     # run config
     parser.add_argument("--max_seq_length", type=int, default=32, help="max lenght of token sequence")
     parser.add_argument("--num_neg_sample", type=int, default=10, help="max lenght of token sequence")
@@ -55,8 +57,8 @@ def get_args():
                         help="How often do we snapshot losses, for inclusion in the progress dump? (0 = disable)")
     parser.add_argument('--save_steps', type=int, default=1000, help="Save checkpoint every X updates steps.")
     parser.add_argument('--eval_steps', type=int, default=None, help="eval every X updates steps.")
-    # parser.add_argument('--max_save_checkpoints', type=int, default=500,
-    #                     help="The max amounts of checkpoint saving. Bigger than it will delete the former checkpoints")
+    parser.add_argument('--max_save_checkpoints', type=int, default=10,
+                        help="The max amounts of checkpoint saving. Bigger than it will delete the former checkpoints")
     # parser.add_argument("--eval_all_checkpoints", action='store_true',
     #                     help="Evaluate all checkpoints starting with the same prefix as model_name ending and ending with step number")
     parser.add_argument("--no_cuda", action='store_true',
@@ -81,7 +83,6 @@ def get_args():
 
     # parser.add_argument("--comment", default='', type=str,
     #                     help="The comment")
-    # parser.add_argument('--output_dir', type=Path, default="output")
     #
     # parser.add_argument("--restore", type=bool, default=True,
     #                     help="Whether restore from the last checkpoint, is nochenckpoints, start from scartch")

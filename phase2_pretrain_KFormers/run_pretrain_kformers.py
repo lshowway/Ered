@@ -2,6 +2,7 @@ import sys, os
 from tqdm import tqdm, trange
 import time
 import random
+import shutil
 
 curPath = os.path.abspath(os.path.dirname(__file__))
 rootPath = os.path.split(curPath)[0]
@@ -74,8 +75,8 @@ def do_eval(model, args, val_dataset, global_step=None, entity_set=None):
     for step, batch in enumerate(eval_iterator):
         total_step += 1
 
-        if step > 3:
-            break
+        # if step > 3:
+        #     break
 
         model.eval()
         batch = tuple(t.to(args.device) for t in batch)
@@ -185,26 +186,36 @@ def do_train(args, model, train_dataset, val_dataset, test_dataset=None, entity_
             model.train()
             batch = tuple(t.to(args.device) for t in batch)
 
-            input_ids, attention_mask, token_type_ids = batch[0], batch[1], batch[2]
-            pos_entities = batch[-1]
-            batch_size = pos_entities.size(0)
-            # N = 10 # 10个负样本
-            neg_entities = torch.tensor(random.sample(entity_set, args.num_neg_sample * batch_size))
-            neg_entities = neg_entities.reshape(batch_size, args.num_neg_sample).to(args.device)
-            candidate_entities = torch.cat([pos_entities.reshape(batch_size, -1), neg_entities], dim=-1)  # 正负样本组成候选
-            entity_labels = torch.zeros(candidate_entities.size())
-            entity_labels[:, 0] = 1 # 这是候选样本的标签：0/1
+            input_ids, attention_mask, token_type_ids, token_label = batch[0], batch[1], batch[2], batch[3]
+            mention_span_idx, mention_entity_candidates = batch[4], batch[5]
+            des_entity_candidates = batch[6]
+
+            # pos_entities = batch[-1]
+            # batch_size = pos_mention_entities.size(0)
+            # # N = 10 # 10个负样本
+            # neg_entities = torch.tensor(random.sample(entity_set, args.num_neg_sample * batch_size))
+            # neg_entities = neg_entities.reshape(batch_size, args.num_neg_sample).to(args.device)
+            # candidate_entities = torch.cat([pos_entities.reshape(batch_size, -1), neg_entities], dim=-1)  # 正负样本组成候选
+            # entity_labels = torch.zeros(candidate_entities.size())
+            # entity_labels[:, 0] = 1 # 这是候选样本的标签：0/1
+
+            # 对角矩阵
+            entity_labels = torch.eye(des_entity_candidates.size(0))
 
             # shuffle: train need, dev not need
-            indexes = torch.randperm(args.num_neg_sample+1)
-            candidate_entities = candidate_entities[:, indexes]
-            entity_labels = entity_labels[:, indexes]
+            # indexes = torch.randperm(args.num_neg_sample+1)
+            # candidate_entities = candidate_entities[:, indexes]
+            # entity_labels = entity_labels[:, indexes]
 
-            inputs = {"description_ids": input_ids,
-                      "description_attention_mask": attention_mask,
-                      "description_segment_ids": token_type_ids if args.model_type in ['bert', 'unilm'] else None,
-                      "candidate_entities": candidate_entities,
-                      "entity_labels": entity_labels,
+
+            inputs = {"input_ids": input_ids,
+                      "input_mask": attention_mask,
+                      "input_segment": token_type_ids if args.model_type in ['bert', 'unilm'] else None,
+                      "mention_token_label": token_label,
+                      "mention_span_idx": mention_span_idx,
+                      "mention_entity_candidates": mention_entity_candidates,
+                      "des_entity_candidates": des_entity_candidates,
+                      "entity_labels": entity_labels
                       }
 
             _, batch_loss, _ = model(**inputs)
@@ -227,19 +238,39 @@ def do_train(args, model, train_dataset, val_dataset, test_dataset=None, entity_
                 global_step += 1
             if args.local_rank in [-1, 0] and args.logging_steps > 0 and global_step % args.logging_steps == 0:
                 logger.info("epoch {}, step {}, global_step {}, train_loss: {:.5f}".format(epoch, step + 1, global_step, loss))
+                # print('epoch: {}, global step: {}, dev results: {}**'.format(epoch, global_step, eval_results))
                 # Log metrics
-                tb_writer.add_scalar('lr', scheduler.get_lr()[0], global_step)
+                tb_writer.add_scalar('lr', scheduler.get_last_lr()[0], global_step)
                 tb_writer.add_scalar('loss', loss, global_step)
             if args.local_rank in [-1, 0] and args.eval_steps > 0 and global_step > 0 and global_step % args.eval_steps == 0:
                 eval_results = do_eval(model, args, val_dataset, global_step, entity_set)
                 t = eval_results["eval_loss"]
-                if t > best_dev_result:
+                if t < best_dev_result:
                     best_dev_result = eval_results["eval_loss"]
                     logger.info('epoch: {}, global step: {}, dev results: {}**'.format(epoch, global_step, eval_results))
                     # print('epoch: {}, global step: {}, dev results: {}**'.format(epoch, global_step, eval_results))
                 else:
                     logger.info('epoch: {}, global step: {}, dev results: {}'.format(epoch, global_step, eval_results))
                     # print('epoch: {}, global step: {}, dev results: {}'.format(epoch, global_step, eval_results))
+            if args.local_rank in [-1, 0] and args.save_steps > 0 and global_step > 0 and global_step % args.save_steps == 0:
+                # Save model checkpoint
+                output_dir = os.path.join(args.output_dir, 'checkpoint-{}'.format(global_step))
+                if not os.path.exists(output_dir):
+                    os.makedirs(output_dir)
+                model_to_save = model.module if hasattr(model, 'module') else model  # Take care of distributed/parallel training
+                torch.save(model_to_save.state_dict(), os.path.join(output_dir, "pytorch_model.bin"))  # save checkpoint
+                torch.save(optimizer.state_dict(), os.path.join(output_dir, 'optimizer.bin'))  # save optimizer
+                torch.save(scheduler.state_dict(), os.path.join(output_dir, 'scheduler.bin'))  # save scheduler
+                torch.save(args, os.path.join(output_dir, 'training_args.bin'))  # save arguments
+                torch.save(global_step, os.path.join(args.output_dir, 'global_step.bin'))
+                logger.info("Save model checkpoint, optimizer, scheduler, args, global_step to %s", output_dir)
+                # control the number of checkpoints to save
+                if (global_step / args.save_steps) > args.max_save_checkpoints:
+                    try:
+                        shutil.rmtree(os.path.join(args.output_dir, 'checkpoint-{}'.format(
+                            global_step - args.max_save_checkpoints * args.save_steps)))
+                    except OSError as e:
+                        print(e)
             if 0 < args.max_steps < global_step:
                 epoch_iterator.close()
                 break
@@ -248,14 +279,34 @@ def do_train(args, model, train_dataset, val_dataset, test_dataset=None, entity_
         if args.local_rank in [-1, 0]:
             eval_results = do_eval(model, args, val_dataset, global_step, entity_set)
             t = eval_results["eval_loss"]
-            if t > best_dev_result:
+            if t < best_dev_result:
                 best_dev_result = eval_results["eval_loss"]
                 logger.info('epoch: {}, global step: {}, dev results: {}**'.format(epoch, global_step, eval_results))
                 # print('epoch: {}, global step: {}, dev results: {}**'.format(epoch, global_step, eval_results))
             else:
                 logger.info('epoch: {}, global step: {}, dev results: {}'.format(epoch, global_step, eval_results))
                 # print('epoch: {}, global step: {}, dev results: {}'.format(epoch, global_step, eval_results))
-
+        if args.local_rank in [-1, 0] and args.save_steps > 0 and global_step > 0 and global_step % args.save_steps == 0:
+            # Save model checkpoint
+            # output_dir = os.path.join(args.output_dir, 'checkpoint-{}'.format(global_step))
+            output_dir = os.path.join(args.output_dir, 'checkpoint-epoch-{}-{}'.format(epoch, global_step))
+            if not os.path.exists(output_dir):
+                os.makedirs(output_dir)
+            model_to_save = model.module if hasattr(model, 'module') else model  # Take care of distributed/parallel training
+            torch.save(model_to_save.state_dict(), os.path.join(output_dir, "pytorch_model.bin"))  # save checkpoint
+            torch.save(optimizer.state_dict(), os.path.join(output_dir, 'optimizer.bin'))  # save optimizer
+            torch.save(scheduler.state_dict(), os.path.join(output_dir, 'scheduler.bin'))  # save scheduler
+            torch.save(args, os.path.join(output_dir, 'training_args.bin'))  # save arguments
+            torch.save(global_step, os.path.join(args.output_dir, 'global_step.bin'))
+            logger.info("Save model checkpoint, optimizer, scheduler, args, global_step to %s", output_dir)
+            # control the number of checkpoints to save
+            if (global_step / args.save_steps) > args.max_save_checkpoints:
+                try:
+                    shutil.rmtree(os.path.join(args.output_dir, 'checkpoint-{}'.format(
+                        global_step - args.max_save_checkpoints * args.save_steps)))
+                except OSError as e:
+                    print(e)
+        # end all epoches
         if 0 < args.max_steps < global_step:
             train_iterator.close()
             break
@@ -266,8 +317,8 @@ def do_train(args, model, train_dataset, val_dataset, test_dataset=None, entity_
 
 def main():
     args = get_args()
-    if args.eval_steps is None:
-        args.eval_steps = args.save_steps * 10
+    # if args.eval_steps is None:
+    #     args.eval_steps = args.save_steps * 10
 
     # Setup distant debugging if needed
     if args.server_ip and args.server_port:
