@@ -23,15 +23,15 @@ class AbstractDB(DbfilenameShelf):
 
     @staticmethod
     def build(in_dir, out_file, pool_size):
-        with open('G:\D\MSRA\knowledge_aware\knowledge_resource\dbpedia_abstract_corpus/our_dbpedia_abstract_corpus_v1.json', 'w') as fw:
-            with closing(AbstractDB(out_file, protocol=-1)) as db:
-                target_files = [f for f in sorted(os.listdir(in_dir)) if f.endswith('ttl.gz')]
-                with closing(Pool(pool_size)) as pool:
-                    f = partial(_process_file, in_dir=in_dir)
-                    for ret in pool.imap(f, target_files):
-                        for x in ret:
-                            json.dump(x, fw)
-                            fw.write('\n')
+        with open(out_file, 'w') as fw:
+            # with closing(AbstractDB(out_file, protocol=-1)) as db:
+            target_files = [f for f in sorted(os.listdir(in_dir)) if f.endswith('ttl.gz')]
+            with closing(Pool(pool_size)) as pool:
+                f = partial(_process_file, in_dir=in_dir)
+                for ret in pool.imap(f, target_files):
+                    for x in ret:
+                        json.dump(x, fw)
+                        fw.write('\n')
 
     def count_valid_words(self, vocab, max_text_len):
         tokenizer = RegexpTokenizer()
