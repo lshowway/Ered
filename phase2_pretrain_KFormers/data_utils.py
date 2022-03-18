@@ -34,18 +34,7 @@ def load_and_cache_examples(args, processor, tokenizer, dataset_type, evaluate=F
         else:
             examples = processor.get_train_examples(args.data_dir, dataset_type)
 
-        features =  convert_examples_to_features(examples, args.max_seq_length, tokenizer,
-                                                cls_token_at_end=bool(args.model_type in ['xlnet']),
-                                                # xlnet has a cls token at the end
-                                                cls_token=tokenizer.cls_token,
-                                                cls_token_segment_id=2 if args.model_type in ['xlnet'] else 0,
-                                                sep_token=tokenizer.sep_token,
-                                                sep_token_extra=bool(args.model_type in ['roberta']),
-                                                # roberta uses an extra separator b/w pairs of sentences, cf. github.com/pytorch/fairseq/commit/1684e166e3da03f5b600dbb7855cb98ddfcd0805
-                                                pad_on_left=bool(args.model_type in ['xlnet']),
-                                                # pad on the left for xlnet
-                                                pad_token=tokenizer.convert_tokens_to_ids([tokenizer.pad_token])[0],
-                                                pad_token_segment_id=4 if args.model_type in ['xlnet'] else 0,)
+        features =  convert_examples_to_features(examples, args.max_seq_length, tokenizer)
         if args.local_rank in [-1, 0]:
             torch.save(features, cached_features_file)
             logger.warning("===> Saving features into cached file %s", cached_features_file)
@@ -53,109 +42,129 @@ def load_and_cache_examples(args, processor, tokenizer, dataset_type, evaluate=F
     if args.local_rank == 0 and not evaluate:
         torch.distributed.barrier()  # Make sure only the first process in distributed training process the dataset, and the others will use the cache
 
-    all_input_ids = torch.tensor([f.input_ids for f in features], dtype=torch.long)
-    all_input_mask = torch.tensor([f.input_mask for f in features], dtype=torch.long)
-    all_segment_ids = torch.tensor([f.segment_ids for f in features], dtype=torch.long)
-    all_label_ids = torch.tensor([f.label_id for f in features], dtype=torch.long)
+    input_ids = torch.tensor([f.input_ids for f in features], dtype=torch.long)
+    input_mask = torch.tensor([f.input_mask for f in features], dtype=torch.long)
+    segment_ids = torch.tensor([f.segment_ids for f in features], dtype=torch.long)
+    mlm_labels = torch.tensor([f.mlm_labels for f in features], dtype=torch.long)
 
-    dataset = TensorDataset(all_input_ids, all_input_mask, all_segment_ids,
-                            all_label_ids)
+    mention_span = torch.tensor([f.mention_span for f in features], dtype=torch.float)
+    mention_entity = torch.tensor([f.mention_entity for f in features], dtype=torch.long)
+    description_entity = torch.tensor([f.description_entity for f in features], dtype=torch.long)
+
+    # entity_labels = torch.tensor([f.entity_labels for f in features], dtype=torch.long)
+
+    dataset = TensorDataset(input_ids, input_mask, segment_ids, mlm_labels,
+                            mention_span, mention_entity, description_entity)
     return dataset
 
 
 
-def convert_examples_to_features(examples,
-                                 origin_seq_length,
-                                tokenizer,
-                                cls_token_at_end=False,
-                                cls_token='[CLS]',
-                                cls_token_segment_id=1,
-                                sep_token='[SEP]',
-                                sep_token_extra=False,
-                                pad_on_left=False,
-                                pad_token=0,
-                                pad_token_segment_id=0,
-                                sequence_a_segment_id=0,
-                                sequence_b_segment_id=1,
-                                mask_padding_with_zero=True):
-
+def convert_examples_to_features(examples, max_seq_length, tokenizer,):
     features = []
-    max_num_tokens = origin_seq_length - tokenizer.num_special_tokens_to_add(pair=False)
+
     for (ex_index, x) in enumerate(examples):
         if ex_index % 10000 == 0:
             logger.info("Writing example %d of %d" % (ex_index, len(examples)))
 
-        qid, entity_name, description = x.qid, x.entity_name, x.description
+        if ex_index > 10000:
+            break
+
+        qid, description_entity, description = x.qid, x.entity_name, x.description
         des_mentions_list = x.des_mentions
 
         # t = {"mention": mention, "mention_entity": mention_entity, "mention_span": mention_span,
         #      "mention_entity_qid": mention_entity_qid}
-        max_end = -1
         for y in des_mentions_list:
             mention = y['mention']
             mention_entity = y['mention_entity']
-            mention_qid = y['mention_entity_qid']
-            mention_span = y['mention_span']
-            if mention_span[1] > max_end:
-                max_end = mention_span[1]
+            # mention_qid = y['mention_entity_qid']  # 有NO_QID
+            start, end = y['mention_span']
+            # text
+            before_mention = description[: start]
+            this_mention = description[start: end]
+            assert this_mention == mention
+            after_mention = description[end:]
+            # ------
+            tokens = [tokenizer.cls_token]
+
+            tokens += tokenizer.tokenize(before_mention)
+            new_start = len(tokens)
+
+            tokens += ['@'] # ['SOM']不另设特殊符号，因为需要扩vocab 155
+            mention_tokens = tokenizer.tokenize(this_mention)
+            tokens += [tokenizer.mask_token] * len(mention_tokens)
+            new_end = len(tokens) # 158
+            tokens += ['@'] # ['EOM']
+
+            tokens += tokenizer.tokenize(after_mention)
+
+            tokens += [tokenizer.eos_token] # 可能超过，可能不足
+            # ========
+            input_ids = tokenizer.convert_tokens_to_ids(tokens)
+            mention_tokens_ids = tokenizer.convert_tokens_to_ids(mention_tokens)
+            input_mask = [1] * len(input_ids)
+            segment_ids = [0] * len(input_ids)
+
+            # 还可以是
+            # span_id[new_start: new_end+1] = 1  # 中间token也使用
+            # === cut
+            input_ids = input_ids[: max_seq_length]
+            input_mask = input_mask[: max_seq_length]
+            segment_ids = segment_ids[: max_seq_length]
+            # mlm_labels = mlm_labels[: max_seq_length]
+            # span_id = span_id[: max_seq_length]
+            # ==
+            # Zero-pad up to the sequence length.
+            padding_length = max_seq_length - len(input_ids)
+            input_ids += [tokenizer.pad_token_id] * padding_length
+            input_mask += [0] * padding_length
+            # roberta只有一种token type embedding
+            segment_ids += [tokenizer.pad_token_type_id] * padding_length
+            # mlm_labels += [-1] * padding_length
+            # span_id += [0] * padding_length
+            # ===
+            # 如果mention被cut了
+            span_id = np.zeros(len(input_ids))
+            mlm_labels = [-1] * max_seq_length  # pad之后的
+
+            if new_start >= max_seq_length:
+                # new_start = new_end = 0
+                span_id[0] = 1
+                mlm_labels[0] = mention_tokens_ids[0]  # 不包括@@符号
+            elif new_end >= max_seq_length:
+                new_end = -1  # 如果后面超了，就用最后一个
+                span_id[new_start] = 1
+                span_id[-1] = 1
+
+                mlm_labels[new_start + 1: max_seq_length] = mention_tokens_ids[: max_seq_length - new_start - 1]  # 不包括@@符号
+            else:
+                span_id[new_start] = 1
+                span_id[new_end] = 1
+                mlm_labels[new_start+1: new_end] = mention_tokens_ids
+
+            if sum(mlm_labels) == 0 or sum(span_id) == 0:
+                print(new_start, new_end)
 
 
+                # print(len(mlm_labels[new_start + 1: max_seq_length]), len(mention_tokens_ids[: max_seq_length - new_start - 1]))
+            # print(len(mlm_labels))
 
-        neighbours = [x[0] for x in example.neighbour]
+            assert len(input_ids) == max_seq_length
+            assert len(input_mask) == max_seq_length
+            assert len(segment_ids) == max_seq_length
+            assert len(mlm_labels) == max_seq_length
+            assert len(span_id) == max_seq_length
 
-        text_a = example.text_a
-        subj_start, subj_end, obj_start, obj_end = example.text_b
-        # relation = example.label
-        if subj_start < obj_start:
-            # sub, and then obj (有空格啊，妈的)
-            before_sub = text_a[:subj_start].strip()
-            tokens = tokenizer.tokenize(before_sub)
-            subj_special_start = len(tokens)
-            tokens += ['@']
-            sub = text_a[subj_start:subj_end + 1].strip()
-            tokens += tokenizer.tokenize(sub)
-            tokens += ['@']
-            between_sub_obj = text_a[subj_end + 1: obj_start].strip()
-            tokens += tokenizer.tokenize(between_sub_obj)
-            obj_special_start = len(tokens)
-            tokens += ['#']
-            obj = text_a[obj_start:obj_end + 1].strip()
-            tokens += tokenizer.tokenize(obj)
-            tokens += ['#']
-            after_obj = text_a[obj_end + 1:].strip()
-            tokens += tokenizer.tokenize(after_obj)
-        else:
-            # ojb, and then sub
-            before_obj = text_a[:obj_start].strip()
-            tokens = tokenizer.tokenize(before_obj)
-            obj_special_start = len(tokens)
-            tokens += ['#']
-            obj = text_a[obj_start: obj_end + 1].strip()
-            tokens += tokenizer.tokenize(obj)
-            tokens += ['#']
-            between_obj_sub = text_a[obj_end + 1: subj_start].strip()
-            tokens += tokenizer.tokenize(between_obj_sub)
-            subj_special_start = len(tokens)
-            tokens += ['@']
-            sub = text_a[subj_start:subj_end + 1].strip()
-            tokens += tokenizer.tokenize(sub)
-            tokens += ['@']
-            after_sub = text_a[subj_end + 1:].strip()
-            tokens += tokenizer.tokenize(after_sub)
-
-        tokens = [cls_token] + tokens + [sep_token]
-        tokens = tokens[: origin_seq_length]
-
-        subj_special_start += 1  # because of cls_token
-        obj_special_start += 1
-
-
-        features.append(
-            InputFeatures(input_ids=input_ids,
-                          input_mask=input_mask,
-                          segment_ids=segment_ids,
-                          label_id=entity_label
-                          ))
+            features.append(
+                InputFeatures(input_ids=input_ids,
+                              input_mask=input_mask,
+                              segment_ids=segment_ids,
+                              mlm_labels=mlm_labels,
+                              mention_span = span_id,
+                              mention_entity=mention_entity, # 这需要转换成idx表示的
+                              description_entity=description_entity, # # 这需要转换成idx表示的
+                              # entity_labels=None
+                              ))
 
     return features
 
@@ -172,11 +181,18 @@ class InputExample(object):
 
 
 class InputFeatures(object):
-    def __init__(self, input_ids=None, input_mask=None, segment_ids=None, label_id=None):
+    def __init__(self, input_ids=None, input_mask=None, segment_ids=None, mlm_labels=None,
+                 mention_span=None, mention_entity=None, description_entity=None, entity_labels=None,):
         self.input_ids = input_ids
         self.input_mask = input_mask
         self.segment_ids = segment_ids
-        self.label_id = label_id
+        self.mlm_labels = mlm_labels
+
+        self.mention_span = mention_span
+        self.mention_entity = mention_entity
+        self.description_entity = description_entity
+
+        # self.entity_labels = entity_labels
 
 
 
@@ -191,7 +207,7 @@ class DataProcessor(object):
         """Gets a collection of `InputExample`s for the dev set."""
         raise NotImplementedError()
 
-    def get_labels(self):
+    def get_labels(self, ):
         """Gets the list of labels for this data set."""
         raise NotImplementedError()
 
@@ -206,41 +222,51 @@ class DataProcessor(object):
 
     def _read_json(cls, input_file):
         with open(input_file, 'r', encoding='utf8') as f:
-            return json.load(f)
+            data = [json.loads(line) for line in f]
+            return data
 
 
 
 class EntityPredictionProcessor(DataProcessor):
-    def __init__(self, data_dir=None, tokenizer=None):
-        self.tokenizer = tokenizer
+    def __init__(self, data_dir=None, entity_vocab_file=None):
+        self.entity_vocab_file = entity_vocab_file
         self.data_dir = data_dir
 
     def get_train_examples(self, data_dir, dataset_type=None):
-        lines = self._read_json(os.path.join(data_dir, "train.json"))
-        return self._create_examples(lines, self.tokenizer)
+        lines = self._read_json(os.path.join(data_dir, "our_dbpedia_abstract_corpus_v4.json"))
+        return self._create_examples(lines)
 
     def get_dev_examples(self, data_dir, dataset_type=None):
-        lines = self._read_tsv(os.path.join(data_dir, "{}.json".format(dataset_type)))
-        return self._create_examples(lines, self.tokenizer)
+        lines = self._read_json(os.path.join(data_dir, "our_dbpedia_abstract_corpus_v4_dev.json".format(dataset_type)))
+        return self._create_examples(lines)
 
     def get_labels(self):
+        entity_vocab = []
+        with open(self.entity_vocab_file, encoding='utf-8') as fr:
+            for line in fr:
+                title, qid = line.strip('\n').split('\t')
+                entity_vocab.append(title)
+        entity_vocab = dict(zip(entity_vocab, range(len(entity_vocab))))
+        return entity_vocab
 
-        return []
-
-    def _create_examples(self, lines, tokenizer, tokenizing_batch_size=32768):
+    def _create_examples(self, lines):
         examples = []
-        batch_input, label_list, first_index = [], [], 0
-        label_set = {k: v for v, k in enumerate(self.get_labels())}
+        label_set = self.get_labels() # 4.94 million
 
         for (i, x) in enumerate(lines):
-            qid, entity_name, description, des_mentions = \
+            qid, entity_name, description, des_mentions_list = \
                 x['global_entity_name_qid'], x['global_entity_name'], x['abstract'], x['abstract_mentions']
 
             # des_mentions = {"mention": mention, "mention_entity": mention_entity, "mention_span": mention_span,
             #      "mention_entity_qid": mention_entity_qid}
-
+            new_de_mentions_list = []
+            for des_mentions in des_mentions_list:
+                entity_name = label_set[entity_name] # 不可以报错
+                t = des_mentions['mention_entity']
+                des_mentions['mention_entity'] = label_set[t]  # 这儿为什么会报错？mention_entity不是根据vocab过滤，或者vocab是根据entity生成的呀？
+                new_de_mentions_list.append(des_mentions)
             examples.append(
-                InputExample(guid=i, qid=qid, entity_name=entity_name, description=description, des_mentions=des_mentions))
+                InputExample(guid=i, qid=qid, entity_name=entity_name, description=description, des_mentions=new_de_mentions_list))
 
 
         return examples

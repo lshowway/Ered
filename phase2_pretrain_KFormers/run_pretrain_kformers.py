@@ -19,8 +19,12 @@ from torch.utils.data import DataLoader, RandomSampler, SequentialSampler
 from torch.utils.data.distributed import DistributedSampler
 from tensorboardX import SummaryWriter
 
+from transformers.models.roberta.tokenization_roberta_fast import RobertaTokenizerFast
+
 from transformers.optimization import AdamW, get_linear_schedule_with_warmup
 from transformers import (
+    RobertaTokenizer, BertTokenizer,
+    RobertaTokenizerFast, BertTokenizerFast,
     AutoConfig,
     AutoTokenizer,
     AutoModelForPreTraining,
@@ -200,7 +204,8 @@ def do_train(args, model, train_dataset, val_dataset, test_dataset=None, entity_
             # entity_labels[:, 0] = 1 # 这是候选样本的标签：0/1
 
             # 对角矩阵
-            entity_labels = torch.eye(des_entity_candidates.size(0))
+            mention_entity_labels = torch.eye(mention_entity_candidates.size(0))
+            des_entity_labels = torch.eye(des_entity_candidates.size(0))
 
             # shuffle: train need, dev not need
             # indexes = torch.randperm(args.num_neg_sample+1)
@@ -215,10 +220,11 @@ def do_train(args, model, train_dataset, val_dataset, test_dataset=None, entity_
                       "mention_span_idx": mention_span_idx,
                       "mention_entity_candidates": mention_entity_candidates,
                       "des_entity_candidates": des_entity_candidates,
-                      "entity_labels": entity_labels
+                      "mention_entity_labels": mention_entity_labels, # 这个的存在用于计算二值交叉熵
+                      "des_entity_labels": des_entity_labels # 这个的存在用于计算二值交叉熵
                       }
 
-            _, batch_loss, _ = model(**inputs)
+            batch_loss = model(**inputs)
             if args.n_gpu > 1:
                 batch_loss = batch_loss.mean()  # mean() to average on multi-gpu parallel training
             if args.gradient_accumulation_steps > 1:
@@ -276,16 +282,16 @@ def do_train(args, model, train_dataset, val_dataset, test_dataset=None, entity_
                 break
 
         # evaluate per epoch
-        if args.local_rank in [-1, 0]:
-            eval_results = do_eval(model, args, val_dataset, global_step, entity_set)
-            t = eval_results["eval_loss"]
-            if t < best_dev_result:
-                best_dev_result = eval_results["eval_loss"]
-                logger.info('epoch: {}, global step: {}, dev results: {}**'.format(epoch, global_step, eval_results))
-                # print('epoch: {}, global step: {}, dev results: {}**'.format(epoch, global_step, eval_results))
-            else:
-                logger.info('epoch: {}, global step: {}, dev results: {}'.format(epoch, global_step, eval_results))
-                # print('epoch: {}, global step: {}, dev results: {}'.format(epoch, global_step, eval_results))
+        # if args.local_rank in [-1, 0]:
+        #     eval_results = do_eval(model, args, val_dataset, global_step, entity_set)
+        #     t = eval_results["eval_loss"]
+        #     if t < best_dev_result:
+        #         best_dev_result = eval_results["eval_loss"]
+        #         logger.info('epoch: {}, global step: {}, dev results: {}**'.format(epoch, global_step, eval_results))
+        #         # print('epoch: {}, global step: {}, dev results: {}**'.format(epoch, global_step, eval_results))
+        #     else:
+        #         logger.info('epoch: {}, global step: {}, dev results: {}'.format(epoch, global_step, eval_results))
+        #         # print('epoch: {}, global step: {}, dev results: {}'.format(epoch, global_step, eval_results))
         if args.local_rank in [-1, 0] and args.save_steps > 0 and global_step > 0 and global_step % args.save_steps == 0:
             # Save model checkpoint
             # output_dir = os.path.join(args.output_dir, 'checkpoint-{}'.format(global_step))
@@ -354,10 +360,20 @@ def main():
         torch.distributed.barrier()  # Make sure only the first process in distributed training will download model & vocab
 
     # load tokenizer
-    tokenizer = AutoTokenizer.from_pretrained(args.model_name_or_path)
+    tokenizer = AutoTokenizer.from_pretrained(args.model_name_or_path, use_fast=True)
+    # if isinstance(tokenizer, RobertaTokenizer) or isinstance(tokenizer, RobertaTokenizerFast):
+    #     special_tokens_dict = {'additional_special_tokens': ['<SOM>', '<EOM>']}
+    #     tokenizer.add_special_tokens(special_tokens_dict)
+    #     # tokenizer.add_special_tokens({'SOM': '<SOM>', 'EOM': '<EOM>'})
+    #     # dict(additional_special_tokens=[ENTITY_TOKEN])
+    #     tokenizer.som = '<SOM>'
+    #     tokenizer.eom = '<EOM>'
+    # elif isinstance(tokenizer, BertTokenizer) or isinstance(tokenizer, BertTokenizerFast):
+    #     tokenizer.add_special_tokens({'SOM': '[SOM]', 'EOM': '[EOM]'})
 
     # load model
-    processor = EntityPredictionProcessor(args.data_dir, tokenizer)
+    args.entity_vocab_file = os.path.join(args.data_dir, "entity_qid_v3.tsv")
+    processor = EntityPredictionProcessor(args.data_dir, args.entity_vocab_file)
     entity_set = list(range(len(processor.get_labels())))  # 4815483
     args.entity_vocab_size = len(entity_set)
 
