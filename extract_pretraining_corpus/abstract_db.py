@@ -24,7 +24,6 @@ class AbstractDB(DbfilenameShelf):
     @staticmethod
     def build(in_dir, out_file, pool_size):
         with open(out_file, 'w') as fw:
-            # with closing(AbstractDB(out_file, protocol=-1)) as db:
             target_files = [f for f in sorted(os.listdir(in_dir)) if f.endswith('ttl.gz')]
             with closing(Pool(pool_size)) as pool:
                 f = partial(_process_file, in_dir=in_dir)

@@ -7,8 +7,9 @@ import wget
 from collections import defaultdict
 from wikimapper import WikiMapper
 from multiprocessing import Pool
+from operator import itemgetter
 
-from abstract_db import AbstractDB
+
 
 
 def download_dbpedia_abstract_files(out_dir):
@@ -21,13 +22,14 @@ def download_dbpedia_abstract_files(out_dir):
         wget.download(url)
 
 
-
 def build_abstract_db(in_dir, out_file, pool_size):
+    # extract information from official NIF file
+    from abstract_db import AbstractDB
     AbstractDB.build(in_dir, out_file, pool_size)
 
 
 mapper = WikiMapper("../knowledge_resource/index_enwiki-20190420.db")
-def extract_qid(mention_entity):
+def map_qid(mention_entity):
     mention_entity_qid = mapper.title_to_id(mention_entity)
     if mention_entity_qid is not None:
         return mention_entity, mention_entity_qid
@@ -35,21 +37,10 @@ def extract_qid(mention_entity):
         return mention_entity, "NO_QID"
 
 
-def read_json_lines(file):
-    all_jsonlines = []
-    with open(file) as fr:
-        for x in fr:
-            x = json.loads(x)
-            all_jsonlines.append(x)
-            # if len(all_jsonlines) > 10000:
-            #     break
-    return all_jsonlines
-
-
-def static_entities_size(file):
+def extract_qids(abstract_file, output_entity_file):
     # include entities of both in abstract and title
     entity_set = set()  # 5913023
-    with open(file) as fr:
+    with open(abstract_file) as fr:
         for x in fr:
             x = json.loads(x)
             global_entity_name = x['global_entity_name']
@@ -58,55 +49,26 @@ def static_entities_size(file):
             for z in abstract_mentions_list:
                 mention_entity = z[1]
                 entity_set.add(mention_entity)  # add entity in abstract
-            # if len(entity_set) > 50000:
-            #     break
+
+    all_jsonlines = list(entity_set)
+
+    with open(output_entity_file, 'w', encoding='utf-8') as fw:
+        span = 10000
+        max_rn = 0
+        max_end = 592  # 5913023
+        for i in range(max_rn, max_end):
+            start = time.time()
+            print(i, start)
+            tmp = all_jsonlines[span * i: span * (i + 1)]
+            with Pool(100) as p:
+                t = p.map(map_qid, tmp)
+            print(time.time() - start)
+            for x in t:
+                fw.write('\t'.join(x))
+                fw.write('\n')
+            fw.flush()
 
     return list(entity_set)
-
-
-def add_qid(all_json_lines, entity_qid_dic, out_file):
-    new_all_lines = []
-    # count = 0
-    for x in all_json_lines:
-        global_entity_name = x['global_entity_name']
-        if global_entity_name in entity_qid_dic:
-            global_entity_name_qid = entity_qid_dic[global_entity_name]
-            # if global_entity_name_qid == "NO_QID":
-            #     count += 1
-            #     continue  # 如果这个entity没有qid，那么他的abstract就不使用
-        else:
-            # count += 1
-            continue
-        global_len = x['global_len']
-        abstract = x['abstract']
-        abstract_mentions_list = x['abstract_mentions']
-        abstract_mentions_list_new = []
-        for z in abstract_mentions_list:
-            mention = z[0]
-            mention_entity = z[1]
-            mention_span = z[2]
-            if mention_entity in entity_qid_dic:
-                mention_entity_qid = entity_qid_dic[mention_entity]
-                # if mention_entity_qid == 'NO_QID':
-                #     # print(mention_entity)
-                #     continue
-                # else:  # 只保留有qid的entity
-                t = {"mention": mention, "mention_entity": mention_entity, "mention_span": mention_span, "mention_entity_qid": mention_entity_qid}
-                abstract_mentions_list_new.append(t)
-            else:
-                continue
-        line_dict = {"global_entity_name_qid": global_entity_name_qid,
-                     "global_entity_name": global_entity_name,
-                     "global_len": global_len,
-                     "abstract": abstract,
-                     "abstract_mentions": abstract_mentions_list_new}
-        new_all_lines.append(line_dict)
-    # print('the number of pages not with qid: ', count)
-
-    with open(out_file, 'w', encoding='utf-8') as fw:
-        for x in new_all_lines:
-            json.dump(x, fw)
-            fw.write('\n')
 
 
 def read_entity_qid_dic(file):
@@ -119,139 +81,219 @@ def read_entity_qid_dic(file):
     return entity_qid_dic
 
 
-def static_entities_count(file):
-    # include entities of both in abstract and title
-    entity_dic = defaultdict(int)  # 5913023
+def read_json_lines(file):
+    all_jsonlines = []
+    count = 0
     with open(file) as fr:
         for x in fr:
-            x = json.loads(x)
-            global_entity_name = x['global_entity_name']
-            entity_dic[global_entity_name] += 1
-            abstract_mentions_list = x['abstract_mentions']
-            for z in abstract_mentions_list:
-                mention_entity = z['mention_entity']
-                entity_dic[mention_entity] += 1
-            # if len(entity_set) > 50000:
+            count += 1
+            # if count > 10000:
             #     break
+            x = json.loads(x)
+            all_jsonlines.append(x)
+    return all_jsonlines
 
-    return entity_dic
+
+def add_qid(all_json_lines, entity_qid_dic, out_file):
+    new_all_lines = []
+    for x in all_json_lines:
+        global_entity_name = x['global_entity_name']
+        if global_entity_name in entity_qid_dic:
+            global_entity_name_qid = entity_qid_dic[global_entity_name]
+        else:
+            continue
+        global_len = x['global_len']
+        abstract = x['abstract']
+        abstract_mentions_list = x['abstract_mentions']
+        abstract_mentions_list_new = []
+        for z in abstract_mentions_list:
+            mention = z[0]
+            mention_entity = z[1]
+            mention_span = z[2]
+            if mention_entity in entity_qid_dic:
+                mention_entity_qid = entity_qid_dic[mention_entity]
+                t = {"mention": mention, "mention_entity": mention_entity, "mention_span": mention_span, "mention_entity_qid": mention_entity_qid}
+                abstract_mentions_list_new.append(t)
+            else:
+                continue
+        line_dict = {"global_entity_name_qid": global_entity_name_qid,
+                     "global_entity_name": global_entity_name,
+                     "global_len": global_len,
+                     "abstract": abstract,
+                     "abstract_mentions": abstract_mentions_list_new}
+        new_all_lines.append(line_dict)
+
+    with open(out_file, 'w', encoding='utf-8') as fw:
+        for x in new_all_lines:
+            json.dump(x, fw)
+            fw.write('\n')
+
+
+def remove_entity_in_roberta_large_vocab(roberta_large_vocab, entity_qid, output_entity_qid_remove_roberta):
+    roberta_large_vocab = json.loads(open(roberta_large_vocab, encoding='utf-8').read())
+    roberta_large_vocab = {k.replace('Ġ', ''): v for k, v in roberta_large_vocab.items()}
+    entity_qid_dic = read_entity_qid_dic(entity_qid)
+    new_entity_qid_dic = {}  # 5897608
+    for k, v in entity_qid_dic.items():
+        if k in roberta_large_vocab or k.lower() in roberta_large_vocab:
+            continue
+        else:
+            new_entity_qid_dic[k] = v
+
+    with open(output_entity_qid_remove_roberta, 'w', encoding='utf-8') as fw:
+        for k, v in new_entity_qid_dic.items():
+            fw.write('\t'.join([k, v]))
+            fw.write('\n')
+
+
+def remove_entity_in_LUKE_vocab(LUKE_vocab_file, entity_vocab_file, output_entity_vocab):
+    # LUKE vocab
+    LUKE_vocab = set()
+    with open(LUKE_vocab_file, encoding='utf-8') as fr:
+        next(fr)
+        next(fr)
+        next(fr)
+        count = 0
+        for x in fr:
+            count += 1
+            x = json.loads(x)
+            entity = x['entities'][0][0]
+            entity = entity.replace(' ', '_')
+            LUKE_vocab.add(entity)
+
+    # v2 entity vocab
+    entity_qid_dic = {}
+    with open(entity_vocab_file, encoding='utf-8') as fr:
+        for line in fr:
+            title, qid = line.strip('\n').split('\t')
+            entity_qid_dic[title] = qid
+
+    # filter 4945967
+    filtered = {entity: qid for entity, qid in entity_qid_dic.items() if entity not in LUKE_vocab}
+
+    common = {entity: qid for entity, qid in entity_qid_dic.items() if entity in LUKE_vocab} # 951641
+
+    with open(output_entity_vocab, 'w', encoding='utf-8') as fw:
+        for e, qid in filtered.items():
+            fw.write('\t'.join([e, qid]) + '\n')
+
+
+def read_used_entity(file):
+    all_entities = set()
+    with open(file, encoding='utf-8') as fr:
+        for line in fr:
+            title, qid = line.strip('\n').split('\t')
+            all_entities.add(title)
+
+    return all_entities
+
+
+def rewrite_abstract(used_entities, abstract_file, output_file):
+    all_lines = read_json_lines(abstract_file)
+
+    new_all_lines = []
+    for x in all_lines:
+        global_entity_name = x['global_entity_name']
+        if global_entity_name not in used_entities:
+            continue
+        abstract_mentions_list = x['abstract_mentions']
+
+        new_abstract_mentions_list = []
+        for z in abstract_mentions_list:
+            mention_entity = z['mention_entity']
+            if mention_entity in used_entities:
+                new_abstract_mentions_list.append(z)
+        new_all_lines.append(x) # 329w
+
+    newlist = sorted(new_all_lines, key=itemgetter('global_len'), reverse=True)
+    with open(output_file, 'w', encoding='utf-8') as fw:
+        for x in newlist:
+            json.dump(x, fw)
+            fw.write('\n')
+            fw.flush()
+
+
+def discrite_abstract(abstract_file, output_file):
+    raw_abstracts = read_json_lines(abstract_file)
+    new_abstracts = []
+    count = 0
+    for x in raw_abstracts:
+        global_entity_name_qid = x['global_entity_name_qid']
+        global_entity_name = x['global_entity_name']
+        global_len = x['global_len']
+        abstract = x['abstract']
+        abstract_mentions_list = x['abstract_mentions']
+
+        if not abstract_mentions_list:
+            count += 1
+        for i in range(len(abstract_mentions_list)):
+            line_dict = {}
+
+            line_dict['global_entity_name_qid'] = global_entity_name_qid
+            line_dict['global_entity_name'] = global_entity_name
+            line_dict['global_len'] = global_len
+            line_dict['abstract'] = abstract
+            line_dict['abstract_mentions'] = [abstract_mentions_list[i]]
+            new_abstracts.append(line_dict) #
+
+    with open(output_file, 'w', encoding='utf-8') as fw:
+        for x in new_abstracts:
+            abstract = x["abstract"]
+            global_len = x['global_len']
+            if global_len > 2000:  # 修剪一下字符大于2K个的
+                start, end = x["abstract_mentions"][0]["mention_span"]
+                span = end - start
+
+                if start > 700:
+                    abstract = abstract[start-700: end+700]
+                    start = 700
+                    end = 700 + span
+                else:
+                    abstract = abstract[: end+1000]
+                global_len = len(abstract)
+                x["abstract_mentions"][0]["mention_span"] = [start, end]
+                x["abstract"] = abstract
+                x['global_len'] = global_len
+            json.dump(x, fw)
+            fw.write('\n')
+            fw.flush()
+    print(count)
 
 
 if __name__ == "__main__":
-    # 第一步：下载DBpedia abstract corpus语料
-    # 这儿代码没下载到哪个文件夹去，此外这个处理文件需要写成参数形式用CLI
+    # 1. download DBpedia abstract corpus; download index_enwiki-20190420.db; extract v1: entity, abstract, mention_list
     # download_dbpedia_abstract_files(out_dir='../knowledge_resource/dbpedia_abstract_corpus')
-    # 第二步：extract v1
-    # download index_enwiki-20190420.db
     # wget https://public.ukp.informatik.tu-darmstadt.de/wikimapper/index_enwiki-20190420.db
     # build_abstract_db(in_dir='../knowledge_resource/dbpedia_abstract_corpus', out_file="../knowledge_resource/dbpedia_abstract_corpus/our_dbpedia_abstract_corpus_v1.json", pool_size=100)
 
-    # 第三步：extract QID 592M
-    # all_jsonlines = static_entities_size(file="../knowledge_resource/dbpedia_abstract_corpus/our_dbpedia_abstract_corpus_v1.json")
-    # file = "../knowledge_resource/dbpedia_abstract_corpus/entity_qid.tsv"
-    # with open(file, 'w', encoding='utf-8') as fw:
-    #     span = 10000
-    #     max_rn = 0
-    #     max_end = 592  # 5913023
-    #     for i in range(max_rn, max_end):
-    #         start = time.time()
-    #         print(i, start)
-    #         tmp = all_jsonlines[span * i: span * (i + 1)]
-    #         with Pool(100) as p:
-    #             t = p.map(extract_qid, tmp)
-    #         print(time.time()-start)
-    #         for x in t:
-    #             fw.write('\t'.join(x))
-    #             fw.write('\n')
-    #         fw.flush()
 
-    # 第四步：add QID, result in 5.9 million entities
+    # 2. extract QID 592M
+    # extract_qids(abstract_file="../knowledge_resource/dbpedia_abstract_corpus/our_dbpedia_abstract_corpus_v1.json",
+    #              output_entity_file="../knowledge_resource/dbpedia_abstract_corpus/entity_qid.tsv")
+
+    # 3. add QID, result in 5.9 million entities
     # entity_qid_dic = read_entity_qid_dic('../knowledge_resource/dbpedia_abstract_corpus/entity_qid.tsv')
     # all_json_lines = read_json_lines(file="../knowledge_resource/dbpedia_abstract_corpus/our_dbpedia_abstract_corpus_v1.json")
     # add_qid(all_json_lines, entity_qid_dic, out_file="../knowledge_resource/dbpedia_abstract_corpus/our_dbpedia_abstract_corpus_v2.json") # with qid
 
 
-    # 第四步：所有entity中，去掉在vocab.txt中出现的（能出现说明挺频繁的了吧）
-    # 1. remove entity in entity_qid.tsv, which is also in vocab.txt
-    # roberta_large_vocab = json.loads(open('../knowledge_resource/vocab.json', encoding='utf-8').read())
-    # roberta_large_vocab = {k.replace('Ġ', ''): v for k, v in roberta_large_vocab.items()}
-    # entity_qid_dic = read_entity_qid_dic('../knowledge_resource/dbpedia_abstract_corpus/entity_qid.tsv')
-    # new_entity_qid_dic = {}
-    # for k, v in entity_qid_dic.items():
-    #     if k in roberta_large_vocab or k.lower() in roberta_large_vocab:
-    #         continue
-    #     else:
-    #         new_entity_qid_dic[k] = v
-    #
-    # with open('../knowledge_resource/dbpedia_abstract_corpus/entity_qid_v2.tsv', 'w', encoding='utf-8') as fw:
-    #     for k, v in new_entity_qid_dic.items():
-    #         # fw.write(k + '\t' + v + '\n')
-    #         fw.write('\t'.join([k, v]))
-    #         fw.write('\n')
+    # 4. remove entity in entity_qid.tsv, which is also in vocab.txt
+    remove_entity_in_roberta_large_vocab(roberta_large_vocab='../knowledge_resource/vocab.json',
+                                         entity_qid='../knowledge_resource/dbpedia_abstract_corpus/entity_qid.tsv',
+                                         output_entity_qid_remove_roberta='../knowledge_resource/dbpedia_abstract_corpus/entity_qid_v2.tsv')
 
 
-    # 第五步：LUKE的100万个entity，抽取其对应的QID
-    # all_json_lines = []
-    # with open("../knowledge_resource/output_ent-vocab.jsonl", encoding='utf-8') as fr:
-    #     next(fr)
-    #     next(fr)
-    #     next(fr)
-    #     count = 0
-    #     for x in fr:
-    #         count += 1
-    #         x = json.loads(x)
-    #         entity = x['entities'][0][0]
-    #         entity = entity.replace(' ', '_')
-    #         all_json_lines.append(entity)
-    #
-    # with open('../knowledge_resource/LUKE_wikipedia_tilte_to_qid.tsv', 'w', encoding='utf-8') as fw:
-    #     span = 10000
-    #     max_rn = 0
-    #     max_end = 100  # 5913023
-    #     for i in range(max_rn, max_end):
-    #         start = time.time()
-    #         print(i, start)
-    #         tmp = all_json_lines[span * i: span * (i + 1)]
-    #         with Pool(50) as p:
-    #             t = p.map(extract_qid, tmp)
-    #         print(time.time()-start)
-    #         for x in t:
-    #             fw.write('\t'.join(x))
-    #             fw.write('\n')
-    #         fw.flush()
+    # 5. remove entity in LUKE vocab
+    # remove_entity_in_LUKE_vocab(LUKE_vocab_file="../knowledge_resource/output_ent-vocab.jsonl",
+    #                             entity_vocab_file='../knowledge_resource/dbpedia_abstract_corpus/entity_qid_v2.tsv',
+    #                             output_entity_vocab='../knowledge_resource/dbpedia_abstract_corpus/entity_qid_v3.tsv')
 
-    # 第六步: 去掉在LUKE中的那些entity，按照qid过滤
-    # qid_title_dic_luke = {}
-    # with open('../knowledge_resource/LUKE_wikipedia_tilte_to_qid.tsv', encoding='utf-8') as fr:
-    #     for line in fr:
-    #         title, qid = line.strip('\n').split('\t')
-    #         if qid != 'NO_QID':
-    #             qid_title_dic_luke[qid] = title
-    #
-    # title_qid_dict_luke = {v: k for k, v in qid_title_dic_luke.items()}
-    #
-    # qid_entity_dic = {}
-    # with open('../knowledge_resource/dbpedia_abstract_corpus/entity_qid_v2.tsv', encoding='utf-8') as fr:
-    #     for line in fr:
-    #         title, qid = line.strip('\n').split('\t')
-    #         qid_entity_dic[qid] = title
-    #
-    # entity_qid_dic = {v: k for k, v in qid_entity_dic.items()}
-    # # 不在LUKE entity vocab中的entities  3660000
-    # filtered = {entity: qid for qid, entity in qid_entity_dic.items() if entity not in title_qid_dict_luke}
-    #
-    # with open('../knowledge_resource/dbpedia_abstract_corpus/entity_qid_v3.tsv', 'w', encoding='utf-8') as fw:
-    #     for e, qid in filtered.items():
-    #         fw.write('\t'.join([e, qid]) + '\n')
+    # 6. rewrite abstract file, v3, only filtered entities are kept
+    used_entities = read_used_entity('../knowledge_resource/dbpedia_abstract_corpus/entity_qid_v3.tsv')
+    rewrite_abstract(used_entities,
+                     abstract_file="../knowledge_resource/dbpedia_abstract_corpus/our_dbpedia_abstract_corpus_v2.json",
+                     output_file="../knowledge_resource/dbpedia_abstract_corpus/our_dbpedia_abstract_corpus_v3.json")
 
-    # 第七步：entity vocab中附加count属性，用于分布式处理; 这个count怎么都这么少，LUKE统计的为啥那么多？
-    # entity_count_dict = static_entities_count(file="../knowledge_resource/dbpedia_abstract_corpus/our_dbpedia_abstract_corpus_v2.json")
-    #
-    # with open('../knowledge_resource/dbpedia_abstract_corpus/entity_qid_count.tsv', 'w', encoding='utf-8') as fw:
-    #     with open('../knowledge_resource/dbpedia_abstract_corpus/entity_qid_v3.tsv', encoding='utf-8') as fr:
-    #         for line in fr:
-    #             title, qid = line.strip('\n').split('\t')
-    #             count = entity_count_dict[title]
-    #             fw.write('\t'.join([title, qid, str(count)]) + '\n')
-
-
+    # 7. 分散abstract，一个abstract只包括一个entity
+    discrite_abstract(abstract_file="../knowledge_resource/dbpedia_abstract_corpus/our_dbpedia_abstract_corpus_v3.json",
+                      output_file="../knowledge_resource/dbpedia_abstract_corpus/our_dbpedia_abstract_corpus_v4.json")
