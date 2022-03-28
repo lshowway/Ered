@@ -161,7 +161,8 @@ def pearson_and_spearman(preds, labels):
 
 
 
-def entity_typing_accuracy(out, l):
+def openentity_metric(out, l):
+
     def f1(p, r):
         if r == 0.:
             return 0.
@@ -178,8 +179,8 @@ def entity_typing_accuracy(out, l):
                 r += len(set(predicted_labels).intersection(set(true_labels))) / float(len(true_labels))
         precision = p / num_entities
         recall = r / num_entities
-        return round(precision, 4), round(recall, 4), round(f1(precision, recall), 4)
-        # return f1(precision, recall)
+        # return round(precision, 4), round(recall, 4), round(f1(precision, recall), 4)
+        return round(f1(precision, recall), 4)
 
     def loose_micro(true, pred):
         num_predicted_labels = 0.
@@ -214,7 +215,69 @@ def entity_typing_accuracy(out, l):
         y2.append(yy2)
         cnt += set(yy1) == set(yy2)  # 要完全预测对
     acc = round(cnt / l.shape[0], 4)
-    rel = {'count': cnt, 'accuracy': acc, 'micro_F1': loose_micro(y2, y1), 'macro_F1': loose_macro(y2, y1)}
+    # rel = {'count': cnt, 'accuracy': acc, 'macro_F1': loose_macro(y2, y1), 'micro_F1': loose_micro(y2, y1)}
+    p, r, f_value = loose_micro(y2, y1)
+    rel = {'count': cnt, 'accuracy': acc, 'precision': p, 'recall': r, 'micro_F1': f_value}
+    return rel
+
+
+def figer_metric(out, l):
+
+    def f1(p, r):
+        if r == 0.:
+            return 0.
+        return 2 * p * r / float(p + r)
+
+    def loose_macro(true, pred):
+        num_entities = len(true)
+        p = 0.
+        r = 0.
+        for true_labels, predicted_labels in zip(true, pred):
+            if len(predicted_labels) > 0:
+                p += len(set(predicted_labels).intersection(set(true_labels))) / float(len(predicted_labels))
+            if len(true_labels):
+                r += len(set(predicted_labels).intersection(set(true_labels))) / float(len(true_labels))
+        precision = p / num_entities
+        recall = r / num_entities
+        # return round(precision, 4), round(recall, 4), round(f1(precision, recall), 4)
+        return round(f1(precision, recall), 4)
+
+    def loose_micro(true, pred):
+        num_predicted_labels = 0.
+        num_true_labels = 0.
+        num_correct_labels = 0.
+        for true_labels, predicted_labels in zip(true, pred):
+            num_predicted_labels += len(predicted_labels)
+            num_true_labels += len(true_labels)
+            num_correct_labels += len(set(predicted_labels).intersection(set(true_labels)))
+        if num_predicted_labels > 0:
+            precision = num_correct_labels / num_predicted_labels
+        else:
+            precision = 0.
+        recall = num_correct_labels / num_true_labels
+        # return round(precision, 4), round(recall, 4), round(f1(precision, recall), 4)
+        return round(f1(precision, recall), 4)
+
+    cnt = 0
+    y1 = []
+    y2 = []
+    for x1, x2 in zip(out, l):
+        yy1 = []
+        yy2 = []
+        top = max(x1)
+        for i in range(len(x1)):
+            # if x1[i] > 0 or x1[i] == top:
+            if x1[i] > 0:
+                yy1.append(i)
+            if x2[i] > 0:
+                yy2.append(i)
+        y1.append(yy1)
+        y2.append(yy2)
+        cnt += set(yy1) == set(yy2)  # 要完全预测对
+    acc = round(cnt / l.shape[0], 4)
+    macro_F1 = loose_macro(y2, y1)
+    micro_F1 = loose_micro(y2, y1)
+    rel = {'count': cnt, 'accuracy': acc, 'macro_F1': macro_F1, 'micro_F1': micro_F1}
     return rel
 
 
@@ -247,8 +310,74 @@ def relation_classification_metric(pred_result, labels, na_id=-1):
         micro_f1 = 2 * micro_p * micro_r / (micro_p + micro_r)
     except:
         micro_f1 = 0
-    result = {'accuracy': acc, 'micro_p': micro_p,
-              'micro_r': micro_r, 'micro_F1': [micro_f1]}
+    result = {'accuracy': round(acc, 4), 'micro_p': round(micro_p),
+              'micro_r': round(micro_r), 'micro_F1': round(micro_f1)}
+
+    return result
+
+
+def fewrel_metric(pred_result, labels):
+    num_predicted_labels = 0
+    num_gold_labels = 0
+    num_correct_labels = 0
+
+    for label, prediction in zip(labels, pred_result):
+        # if prediction != 0:
+        num_predicted_labels += 1
+        # if label != 0:
+        num_gold_labels += 1
+        if prediction == label:
+            num_correct_labels += 1
+
+    if num_predicted_labels > 0:
+        precision = num_correct_labels / num_predicted_labels
+    else:
+        precision = 0.0
+    recall = num_correct_labels / num_gold_labels
+    if recall == 0.0:
+        f1 = 0.0
+    else:
+        f1 = 2 * precision * recall / (precision + recall)
+
+    result = {'micro_p': precision, 'micro_r': recall, 'micro_F1': f1}
+
+    return result
+
+
+def tacred_metric(pred_result, labels, na_id):
+    correct = 0
+    total = len(labels)
+    correct_positive = 0
+    pred_positive = 0
+    gold_positive = 0
+
+    for i in range(total):
+        if labels[i] == pred_result[i]:
+            correct += 1
+            if labels[i] != na_id:
+                correct_positive += 1
+        if labels[i] != na_id:
+            gold_positive += 1
+        if pred_result[i] != na_id:
+            pred_positive += 1
+    acc = float(correct) / float(total)
+    try:
+        micro_p = float(correct_positive) / float(pred_positive)
+    except:
+        micro_p = 0
+    try:
+        micro_r = float(correct_positive) / float(gold_positive)
+    except:
+        micro_r = 0
+    try:
+        micro_f1 = 2 * micro_p * micro_r / (micro_p + micro_r)
+    except:
+        micro_f1 = 0
+    # result = {'acc': acc, 'micro_p': micro_p,
+    #           'micro_r': micro_r, 'micro_F1': micro_f1}
+
+    result = {'accuracy': round(acc, 4), 'micro_p': round(micro_p),
+              'micro_r': round(micro_r), 'micro_F1': round(micro_f1)}
     return result
 
 
@@ -259,16 +388,18 @@ def compute_metrics(task_name, preds, labels):
         return t1
     elif task_name == 'eem':
         return quality_control_metric(preds, labels)
-    elif task_name == 'open_entity':
-        return entity_typing_accuracy(preds, labels)
+    elif task_name == 'openentity':
+        return openentity_metric(preds, labels)
     elif task_name == 'figer':
-        return entity_typing_accuracy(preds, labels)
+        return figer_metric(preds, labels)
     elif task_name == 'tacred':
         from data_utils import TACRED_relations
         NO_RELATION = TACRED_relations.index('NA')
-        return relation_classification_metric(preds, labels, NO_RELATION)
+        # return relation_classification_metric(preds, labels, NO_RELATION)
+        return tacred_metric(preds, labels, NO_RELATION)
+        # return fewrel_metric(preds, labels)
     elif task_name == 'fewrel':
-        return relation_classification_metric(preds, labels)
+        return fewrel_metric(preds, labels)
     else:
         raise KeyError(task_name)
 

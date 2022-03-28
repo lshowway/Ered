@@ -80,7 +80,11 @@ def load_kformers(args, backbone_config_class, k_config_class, backbone_model_cl
             # for x in state_dict.keys():
             #     print(x)
 
-            backbone_model_dict = backbone_model_class.from_pretrained(args.backbone_model_name_or_path,
+            if args.post_trained_checkpoint is not None:
+                backbone_model_dict = backbone_model_class.from_pretrained(args.post_trained_checkpoint,
+                                                                           config=config_backbone).state_dict()
+            else:
+                backbone_model_dict = backbone_model_class.from_pretrained(args.backbone_model_name_or_path,
                                                                        config=config_backbone).state_dict()
             knowledge_model_dict = k_model_class.from_pretrained(args.knowledge_model_name_or_path,
                                                                  config=config_k).state_dict()
@@ -234,6 +238,7 @@ def do_train(args, model, train_dataset, val_dataset, test_dataset=None):
                 input_ids, attention_mask, token_type_ids = batch[0], batch[1], batch[2]
                 k_input_ids, k_mask, k_attention_mask, k_token_type_ids = batch[-5], batch[-4], batch[-3], batch[-2]
                 labels = batch[-1]
+                start_id = None
 
             if args.add_knowledge:
                 inputs = {"input_ids": input_ids,
@@ -244,6 +249,7 @@ def do_train(args, model, train_dataset, val_dataset, test_dataset=None):
                           "k_attention_mask_list": k_attention_mask,
                           "k_token_type_ids_list": k_token_type_ids if args.knowledge_model_type in ['distilbert'] else None,
                           "labels": labels,
+                          "start_id": start_id,
                           }
             else:
                 inputs = {"input_ids": input_ids,
@@ -254,6 +260,7 @@ def do_train(args, model, train_dataset, val_dataset, test_dataset=None):
                           "k_attention_mask_list": None,
                           "k_token_type_ids_list": None,
                           "labels": labels,
+                          "start_id": start_id,
                           }
 
             if args.task_name in ['openentity', 'figer', 'fewrel', 'tacred']:
@@ -277,6 +284,7 @@ def do_train(args, model, train_dataset, val_dataset, test_dataset=None):
                 scheduler.step()  # Update learning rate schedule
                 model.zero_grad()
                 global_step += 1
+                torch.cuda.empty_cache()
             if args.local_rank in [-1, 0] and args.logging_steps > 0 and global_step % args.logging_steps == 0:
                 logger.info("epoch {}, step {}, global_step {}, train_loss: {:.5f}".format(epoch, step + 1, global_step, loss))
             if args.local_rank in [-1, 0] and args.eval_steps > 0 and global_step > 0 and global_step % args.eval_steps == 0:
@@ -286,13 +294,13 @@ def do_train(args, model, train_dataset, val_dataset, test_dataset=None):
                 if t > best_dev_result:  # f1
                     best_dev_result = eval_results[final_metric[args.task_name]]
                     logger.info('epoch: {}, global step: {}, dev results: {}**'.format(epoch, global_step, eval_results))
-                    print('epoch: {}, global step: {}, dev results: {}**'.format(epoch, global_step, eval_results))
                     logger.info('epoch: {}, global step: {}, test results: {}'.format(epoch, global_step, test_results))
+                    print('epoch: {}, global step: {}, dev results: {}**'.format(epoch, global_step, eval_results))
                     print('epoch: {}, global step: {}, test results: {}'.format(epoch, global_step, test_results))
                 else:
                     logger.info('epoch: {}, global step: {}, dev results: {}'.format(epoch, global_step, eval_results))
-                    print('epoch: {}, global step: {}, dev results: {}'.format(epoch, global_step, eval_results))
                     logger.info('epoch: {}, global step: {}, test results: {}'.format(epoch, global_step, test_results))
+                    print('epoch: {}, global step: {}, dev results: {}'.format(epoch, global_step, eval_results))
                     print('epoch: {}, global step: {}, test results: {}'.format(epoch, global_step, test_results))
             if 0 < args.max_steps < global_step:
                 epoch_iterator.close()
@@ -306,13 +314,13 @@ def do_train(args, model, train_dataset, val_dataset, test_dataset=None):
             if t > best_dev_result:  # f1
                 best_dev_result = eval_results[final_metric[args.task_name]]
                 logger.info('epoch: {},  dev results: {}**'.format(epoch, eval_results))
-                print('epoch: {}, dev results: {}**'.format(epoch, eval_results))
                 logger.info('epoch: {}, test results: {}'.format(epoch, test_results))
+                print('epoch: {}, dev results: {}**'.format(epoch, eval_results))
                 print('epoch: {}, test results: {}'.format(epoch, test_results))
             else:
                 logger.info('epoch: {}, dev results: {}'.format(epoch, eval_results))
-                print('epoch: {}, dev results: {}'.format(epoch, eval_results))
                 logger.info('epoch: {}, test results: {}'.format(epoch, test_results))
+                print('epoch: {}, dev results: {}'.format(epoch, eval_results))
                 print('epoch: {}, test results: {}'.format(epoch, test_results))
 
         if 0 < args.max_steps < global_step:
@@ -329,8 +337,9 @@ def do_eval(model, args, val_dataset, global_step):
     out_label_ids = None
     eval_iterator = tqdm(val_dataloader, desc="Evaluating", disable=args.local_rank not in [-1, 0])
     for step, batch in enumerate(eval_iterator):
-        # if step > 3:
-        #     break
+
+        if step > 3:
+            break
 
         model.eval()
         batch = tuple(t.to(args.device) for t in batch)
@@ -378,7 +387,7 @@ def do_eval(model, args, val_dataset, global_step):
                 preds = np.append(preds, logits.detach().cpu().numpy(), axis=0)
                 out_label_ids = np.append(out_label_ids, labels.detach().cpu().numpy(), axis=0)
 
-    if args.task_name in ['open_entity',  'figer']:
+    if args.task_name in ['openentity',  'figer']:
         pass
     elif args.task_name in ['tacred', 'fewrel']:
         preds = np.argmax(preds, axis=1)
@@ -397,7 +406,7 @@ def set_seed(args):
 
 def main():
     args = parse_args()
-    if args.task_name in ['open_entity', 'figer']:
+    if args.task_name in ['openentity', 'figer']:
         from KFormers_roberta_distilbert_modeling import KFormersForEntityTyping as KFormersDownstreamModel
         from KFormers_roberta_distilbert_modeling import RobertaForEntityTyping as BaselineDownstreamModel
     elif args.task_name in ['tacred', 'fewrel']:
@@ -445,9 +454,9 @@ def main():
 
     # get num_label
     if args.task_name == 'tacred':
-        processor = processors[args.task_name](tokenizer=backbone_tokenizer, k_tokenizer=knowledge_tokenizer, negative_sample=args.negative_sample)
+        processor = processors[args.task_name]()
     else:
-        processor = processors[args.task_name](tokenizer=backbone_tokenizer, k_tokenizer=knowledge_tokenizer)
+        processor = processors[args.task_name]()
     # processor = processors[args.task_name](tokenizer=backbone_tokenizer, k_tokenizer=knowledge_tokenizer)
     label_list = processor.get_labels()
     num_labels = len(label_list)

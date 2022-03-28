@@ -294,15 +294,15 @@ class RobertaForEntityTyping(BackbonePreTrainedModel):  # 这个不能继承一�
 
     def forward(self, input_ids=None, attention_mask=None, token_type_ids=None, position_ids=None, \
                 k_input_ids_list=None, k_mask=None, k_attention_mask_list=None,
-                k_token_type_ids_list=None, k_position_ids=None, label=None, start_id=None):
+                k_token_type_ids_list=None, k_position_ids=None, labels=None, start_id=None):
         outputs = self.roberta(input_ids=input_ids, attention_mask=attention_mask,
                                 token_type_ids=token_type_ids, position_ids=position_ids)
         original_text_output = outputs[0]  # batch L d
         start_id = start_id.unsqueeze(1)  # batch 1 L
         entity_vec = torch.bmm(start_id, original_text_output).squeeze(1)  # batch d
         logits = self.classifier(entity_vec)
-        if label is not None:
-            loss = self.loss(logits.view(-1, self.num_labels), label.view(-1, self.num_labels))
+        if labels is not None:
+            loss = self.loss(logits.view(-1, self.num_labels), labels.view(-1, self.num_labels))
             return logits, loss
         else:
             return logits
@@ -323,7 +323,7 @@ class RobertaForRelationClassification(BackbonePreTrainedModel):  # 这个不能
 
     def forward(self, input_ids=None, attention_mask=None, token_type_ids=None, position_ids=None, \
                 k_input_ids_list=None, k_mask=None, k_attention_mask_list=None,
-                k_token_type_ids_list=None, k_position_ids=None, label=None, start_id=None):
+                k_token_type_ids_list=None, k_position_ids=None, labels=None, start_id=None):
 
         outputs = self.roberta(input_ids=input_ids, attention_mask=attention_mask,
                                 token_type_ids=token_type_ids, position_ids=position_ids)
@@ -336,8 +336,8 @@ class RobertaForRelationClassification(BackbonePreTrainedModel):  # 这个不能
             entity_vec = torch.cat([subj_output.squeeze(1), obj_output.squeeze(1)], dim=1)
             logits = self.classifier(entity_vec)
 
-            if label is not None:
-                loss = self.loss(logits.view(-1, self.num_labels), label.view(-1).to(torch.long))
+            if labels is not None:
+                loss = self.loss(logits.view(-1, self.num_labels), labels.view(-1).to(torch.long))
                 return logits, loss
             else:
                 return logits
@@ -360,7 +360,7 @@ class RobertaForSequenceClassification(BackbonePreTrainedModel):
 
     def forward(self, input_ids=None, attention_mask=None, token_type_ids=None, position_ids=None,
                 k_input_ids_list=None, k_mask=None, k_attention_mask_list=None,
-                k_token_type_ids_list=None, k_position_ids=None, labels=None,):
+                k_token_type_ids_list=None, k_position_ids=None, labels=None, start_id=None):
 
         outputs = self.roberta(input_ids, attention_mask=attention_mask,
             token_type_ids=token_type_ids, position_ids=position_ids)
@@ -400,7 +400,8 @@ class KFormersForEntityTyping(BackbonePreTrainedModel):  # 这个不能继承一
 
     def forward(self, input_ids=None, attention_mask=None, token_type_ids=None, position_ids=None, \
                 k_input_ids_list=None, k_mask=None, k_attention_mask_list=None,
-                k_token_type_ids_list=None, k_position_ids=None, label=None, start_id=None):
+                k_token_type_ids_list=None, k_position_ids=None, labels=None, start_id=None):
+
         outputs = self.kformers(input_ids=input_ids, attention_mask=attention_mask,
                                 token_type_ids=token_type_ids, position_ids=position_ids,
                                 k_input_ids_list=k_input_ids_list, k_attention_mask_list=k_attention_mask_list,
@@ -409,8 +410,8 @@ class KFormersForEntityTyping(BackbonePreTrainedModel):  # 这个不能继承一
         start_id = start_id.unsqueeze(1)  # batch 1 L
         entity_vec = torch.bmm(start_id, original_text_output).squeeze(1)  # batch d
         logits = self.classifier(entity_vec)
-        if label is not None:
-            loss = self.loss(logits.view(-1, self.num_labels), label.view(-1, self.num_labels))
+        if labels is not None:
+            loss = self.loss(logits.view(-1, self.num_labels), labels.view(-1, self.num_labels))
             return logits, loss
         else:
             return logits
@@ -433,7 +434,7 @@ class KFormersForRelationClassification(BackbonePreTrainedModel):  # 这个不�
 
     def forward(self, input_ids=None, attention_mask=None, token_type_ids=None, position_ids=None, \
                 k_input_ids_list=None, k_mask=None, k_attention_mask_list=None,
-                k_token_type_ids_list=None, k_position_ids=None, label=None, start_id=None):
+                k_token_type_ids_list=None, k_position_ids=None, labels=None, start_id=None):
         outputs = self.kformers(input_ids=input_ids, attention_mask=attention_mask,
                                 token_type_ids=token_type_ids, position_ids=position_ids,
                                 k_input_ids_list=k_input_ids_list, k_attention_mask_list=k_attention_mask_list,
@@ -447,8 +448,8 @@ class KFormersForRelationClassification(BackbonePreTrainedModel):  # 这个不�
             entity_vec = torch.cat([subj_output.squeeze(1), obj_output.squeeze(1)], dim=1)
             logits = self.output_layer(entity_vec)
 
-            if label is not None:
-                loss = self.loss(logits.view(-1, self.num_labels), label.view(-1).to(torch.long))
+            if labels is not None:
+                loss = self.loss(logits.view(-1, self.num_labels), labels.view(-1).to(torch.long))
                 return logits, loss
             else:
                 return logits

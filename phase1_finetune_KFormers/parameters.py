@@ -37,6 +37,7 @@ def parse_args():
     parser.add_argument("--knowledge_model_type", default="distilbert", type=str)
     parser.add_argument("--backbone_model_name_or_path", default="bert-base-uncased", type=str, )
     parser.add_argument("--knowledge_model_name_or_path", default="distilbert-base-uncased", type=str, )
+    parser.add_argument("--post_trained_checkpoint", default=None, type=str)
     # parser.add_argument("--config_name_k", default="", type=str, )
     # parser.add_argument("--vocab_path_k", default="", type=str)
 
