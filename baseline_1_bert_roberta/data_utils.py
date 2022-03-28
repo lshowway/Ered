@@ -354,16 +354,16 @@ def _truncate_seq_pair(tokens_a, tokens_b, max_length):
 
 
 processors = {
-    "quality_control": QualityControlProcessor,
+    "eem": QualityControlProcessor,
     "sst2": Sst2Processor,
 }
 
 output_modes = {
-    "quality_control": "classification",
+    "eem": "classification",
     "sst2": "classification",
 }
 
 input_modes = {
-    "quality_control": "sentence_pair",
+    "eem": "sentence_pair",
     "sst2": "sentence_single",
 }
