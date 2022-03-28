@@ -25,15 +25,16 @@ from data_utils import (output_modes, processors, load_and_cache_examples, quali
 # from transformers.modelings.roberta.configuration_roberta import RobertaConfig
 # from transformers.modelings.roberta.tokenization_roberta import RobertaTokenizer
 
-from transformers import (BertConfig, BertTokenizer)
+from transformers import (BertConfig, BertTokenizer, RobertaConfig, RobertaTokenizer)
 from transformers.optimization import AdamW, get_linear_schedule_with_warmup
 from bert_dynamic_mask import BertForSequenceClassification
+from roberta_dynamic_mask import RobertaForSequenceClassification
 
 logger = logging.getLogger(__name__)
 
 MODEL_CLASSES = {
     'bert': (BertConfig, BertForSequenceClassification, BertTokenizer),
-    # 'roberta': (RobertaConfig, RobertaForSequenceClassification, RobertaTokenizer),
+    'roberta': (RobertaConfig, RobertaForSequenceClassification, RobertaTokenizer),
 }
 
 
@@ -269,6 +270,8 @@ def train(args, train_dataset, model, tokenizer):
                       # XLM and RoBERTa don't use segment_ids
                       'labels': batch[3], }
             outputs = model(**inputs)
+            del inputs
+            del batch
             loss = outputs[0]  # model outputs are always tuple in pytorch-transformers (see doc)
             if args.n_gpu > 1:
                 loss = loss.mean()  # mean() to average on multi-gpu parallel training
@@ -276,8 +279,8 @@ def train(args, train_dataset, model, tokenizer):
                 loss = loss / args.gradient_accumulation_steps
 
             # epoch_iterator.set_description("train epoch {}, step {}, loss {}".format(epoch, step, loss))
-            if step % 100 == 0:
-                logger.info("train epoch {}, step {}, loss {}".format(epoch, step, loss))
+            # if step % 100 == 0:
+            #     logger.info("train epoch {}, step {}, loss {}".format(epoch, step, loss))
             if args.fp16:
                 with amp.scale_loss(loss, optimizer) as scaled_loss:
                     scaled_loss.backward()
@@ -291,28 +294,29 @@ def train(args, train_dataset, model, tokenizer):
                 scheduler.step()  # Update learning rate schedule
                 model.zero_grad()
                 global_step += 1
-                if args.local_rank in [-1, 0] and args.logging_steps > 0 and global_step % args.logging_steps == 0:
-                    # Log metrics
-                    if args.local_rank in [-1,
-                                           0] and args.evaluate_during_training:  # Only evaluate when single GPU otherwise metrics may not average well
-                        results = evaluate(args, model, tokenizer)
-                        logger.info('dev results_step_%s: ' % global_step, results)
-                        for key, value in results.items():
-                            tb_writer.add_scalar('eval_{}'.format(key), value, global_step)
-                    tb_writer.add_scalar('lr', scheduler.get_lr()[0], global_step)
-                    tb_writer.add_scalar('loss', (tr_loss - logging_loss) / args.logging_steps, global_step)
-                    logging_loss = tr_loss
+                torch.cuda.empty_cache()
+            if args.local_rank in [-1, 0] and args.logging_steps > 0 and global_step % args.logging_steps == 0:
+                # Log metrics
+                if args.local_rank in [-1,
+                                       0] and args.evaluate_during_training:  # Only evaluate when single GPU otherwise metrics may not average well
+                    results = evaluate(args, model, tokenizer)
+                    logger.info('dev results_step_%s: ' % global_step, results)
+                    for key, value in results.items():
+                        tb_writer.add_scalar('eval_{}'.format(key), value, global_step)
+                tb_writer.add_scalar('lr', scheduler.get_lr()[0], global_step)
+                tb_writer.add_scalar('loss', (tr_loss - logging_loss) / args.logging_steps, global_step)
+                logging_loss = tr_loss
 
-                if args.local_rank in [-1, 0] and args.save_steps > 0 and global_step % args.save_steps == 0:
-                    # Save model checkpoint
-                    output_dir = os.path.join(args.output_dir, 'checkpoint-{}'.format(global_step))
-                    if not os.path.exists(output_dir):
-                        os.makedirs(output_dir)
-                    model_to_save = model.module if hasattr(model,
-                                                            'module') else model  # Take care of distributed/parallel training
-                    model_to_save.save_pretrained(output_dir)
-                    torch.save(args, os.path.join(output_dir, 'training_args.bin'))
-                    logger.info("Saving model checkpoint to %s", output_dir)
+            if args.local_rank in [-1, 0] and args.save_steps > 0 and global_step % args.save_steps == 0:
+                # Save model checkpoint
+                output_dir = os.path.join(args.output_dir, 'checkpoint-{}'.format(global_step))
+                if not os.path.exists(output_dir):
+                    os.makedirs(output_dir)
+                model_to_save = model.module if hasattr(model,
+                                                        'module') else model  # Take care of distributed/parallel training
+                model_to_save.save_pretrained(output_dir)
+                torch.save(args, os.path.join(output_dir, 'training_args.bin'))
+                logger.info("Saving model checkpoint to %s", output_dir)
 
             if 0 < args.max_steps < global_step:
                 epoch_iterator.close()

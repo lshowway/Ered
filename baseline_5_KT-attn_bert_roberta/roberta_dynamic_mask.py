@@ -1,45 +1,43 @@
+import math
+
 import torch
-from torch import nn
+import torch.nn as nn
 from torch.nn import CrossEntropyLoss, MSELoss
 
 
-from transformers.models.bert.modeling_bert import \
+from transformers.models.roberta.modeling_roberta import \
     (
-        BertEmbeddings,
-        BertPreTrainedModel,
-        BertPooler,
-        BertSelfAttention,
-        BertEncoder,
-     )
+        RobertaEmbeddings,
+        RobertaLayer as BackboneLayer,
+        RobertaPreTrainedModel,
+        RobertaPooler,
+        RobertaSelfAttention,
+        RobertaEncoder,
+        RobertaClassificationHead,
+     )  # 这个是Roberta
 from transformers.modeling_outputs import \
     (
         SequenceClassifierOutput,
         BaseModelOutputWithPoolingAndCrossAttentions,
+        BaseModelOutputWithCrossAttentions
     )
+from transformers.modeling_utils import apply_chunking_to_forward, prune_linear_layer, find_pruneable_heads_and_indices
+from transformers.activations import ACT2FN
 
 
-class BertModel(BertPreTrainedModel):
-    """
 
-    The model can behave as an encoder (with only self-attention) as well as a decoder, in which case a layer of
-    cross-attention is added between the self-attention layers, following the architecture described in `Attention is
-    all you need <https://arxiv.org/abs/1706.03762>`__ by Ashish Vaswani, Noam Shazeer, Niki Parmar, Jakob Uszkoreit,
-    Llion Jones, Aidan N. Gomez, Lukasz Kaiser and Illia Polosukhin.
+class RobertaModel(RobertaPreTrainedModel):
 
-    To behave as an decoder the model needs to be initialized with the :obj:`is_decoder` argument of the configuration
-    set to :obj:`True`. To be used in a Seq2Seq model, the model needs to initialized with both :obj:`is_decoder`
-    argument and :obj:`add_cross_attention` set to :obj:`True`; an :obj:`encoder_hidden_states` is then expected as an
-    input to the forward pass.
-    """
+    _keys_to_ignore_on_load_missing = [r"position_ids"]
 
     def __init__(self, config, add_pooling_layer=True):
         super().__init__(config)
         self.config = config
 
-        self.embeddings = BertEmbeddings(config)
-        self.encoder = BertEncoder(config)
+        self.embeddings = RobertaEmbeddings(config)
+        self.encoder = RobertaEncoder(config)
 
-        self.pooler = BertPooler(config) if add_pooling_layer else None
+        self.pooler = RobertaPooler(config) if add_pooling_layer else None
 
         self.init_weights()
 
@@ -50,10 +48,6 @@ class BertModel(BertPreTrainedModel):
         self.embeddings.word_embeddings = value
 
     def _prune_heads(self, heads_to_prune):
-        """
-        Prunes heads of the model. heads_to_prune: dict of {layer_num: list of heads to prune in this layer} See base
-        class PreTrainedModel
-        """
         for layer, heads in heads_to_prune.items():
             self.encoder.layer[layer].attention.prune_heads(heads)
 
@@ -87,50 +81,6 @@ class BertModel(BertPreTrainedModel):
 
         return input_mask
 
-    # def convert_idx_to_mask(self, input_ids, attention_mask=None):
-    #     # t1 t2
-    #     batch_size, seq_length = input_ids.size(0), input_ids.size(1)
-    #     input_mask = torch.zeros((batch_size, seq_length, seq_length)).to(input_ids.device)
-    #     T0, T1, T2, A_idx, B_idx = torch.unbind(attention_mask, dim=1)
-    #     for i in range(batch_size):
-    #         t0 = T0[i]
-    #         t1 = T1[i]
-    #         t2 = T2[i]
-    #         a_idx = A_idx[i]
-    #         b_idx = B_idx[i]
-    #
-    #         input_mask[i, :t0, :t0] = 1
-    #         if t1 != -1:
-    #             input_mask[i, t0:t1, t0:t1] = 1  # here
-    #         if t2 != -1:  # desc
-    #             input_mask[i, t0: t2, t0: t2] = 1
-    #         if a_idx != -1:
-    #             input_mask[i, a_idx, :] = 1
-    #         if b_idx != -1:  # 都存在
-    #             input_mask[i, b_idx, :] = 1
-    #
-    #     return input_mask
-
-    # def convert_idx_to_mask(self, input_ids, attention_mask=None):
-    #     batch_size, seq_length = input_ids.size(0), input_ids.size(1)
-    #     input_mask = torch.ones((batch_size, seq_length, seq_length)).to(input_ids.device)
-    #     # T0, T1, T2, A_idx, B_idx = torch.unbind(attention_mask, dim=1)
-    #     # for i in range(batch_size):
-    #     #     t0 = T0[i]
-    #     #     t1 = T1[i]
-    #     #     t2 = T2[i]
-    #     #     a_idx = A_idx[i]
-    #     #     b_idx = B_idx[i]
-    #     #
-    #     #     input_mask[:, t0:, t0:] = 0
-    #     #     if t1 != -1:
-    #     #         input_mask[:, t0:t1, t0:t1] = 1
-    #     #     if t2 != -1:
-    #     #         input_mask[:, t0: t2, t0: t2] = 1
-    #
-    #     return input_mask
-
-
     def forward(
         self,
         input_ids=None,
@@ -145,17 +95,7 @@ class BertModel(BertPreTrainedModel):
         output_hidden_states=None,
         return_dict=None,
     ):
-        r"""
-        encoder_hidden_states  (:obj:`torch.FloatTensor` of shape :obj:`(batch_size, sequence_length, hidden_size)`, `optional`):
-            Sequence of hidden-states at the output of the last layer of the encoder. Used in the cross-attention if
-            the model is configured as a decoder.
-        encoder_attention_mask (:obj:`torch.FloatTensor` of shape :obj:`(batch_size, sequence_length)`, `optional`):
-            Mask to avoid performing attention on the padding token indices of the encoder input. This mask is used in
-            the cross-attention if the model is configured as a decoder. Mask values selected in ``[0, 1]``:
 
-            - 1 for tokens that are **not masked**,
-            - 0 for tokens that are **masked**.
-        """
         output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
         output_hidden_states = (
             output_hidden_states if output_hidden_states is not None else self.config.output_hidden_states
@@ -185,9 +125,9 @@ class BertModel(BertPreTrainedModel):
 
         # We can provide a self-attention mask of dimensions [batch_size, from_seq_length, to_seq_length]
         # ourselves in which case we just need to make it broadcastable to all heads.
-        # extended_attention_mask: torch.Tensor = self.get_extended_attention_mask(attention_mask, input_shape, device)
         extended_attention_mask = attention_mask.to(dtype=input_ids.dtype)
         extended_attention_mask = (1.0 - extended_attention_mask) * -10000.0
+
         # If a 2D or 3D attention mask is provided for the cross-attention
         # we need to make broadcastable to [batch_size, num_heads, seq_length, seq_length]
         if self.config.is_decoder and encoder_hidden_states is not None:
@@ -199,11 +139,6 @@ class BertModel(BertPreTrainedModel):
         else:
             encoder_extended_attention_mask = None
 
-        # Prepare head mask if needed
-        # 1.0 in head_mask indicate we keep the head
-        # attention_probs has shape bsz x n_heads x N x N
-        # input head_mask has shape [num_heads] or [num_hidden_layers x num_heads]
-        # and head_mask is converted to shape [num_hidden_layers x batch x num_heads x seq_length x seq_length]
         head_mask = self.get_head_mask(head_mask, self.config.num_hidden_layers)
 
         embedding_output = self.embeddings(
@@ -234,14 +169,16 @@ class BertModel(BertPreTrainedModel):
         )
 
 
-class BertForSequenceClassification(BertPreTrainedModel):
+
+class RobertaForSequenceClassification(RobertaPreTrainedModel):
+    _keys_to_ignore_on_load_missing = [r"position_ids"]
+
     def __init__(self, config):
         super().__init__(config)
         self.num_labels = config.num_labels
 
-        self.bert = BertModel(config)
-        self.dropout = nn.Dropout(config.hidden_dropout_prob)
-        self.classifier = nn.Linear(config.hidden_size, config.num_labels)
+        self.roberta = RobertaModel(config, add_pooling_layer=False)
+        self.classifier = RobertaClassificationHead(config)
 
         self.init_weights()
 
@@ -258,15 +195,10 @@ class BertForSequenceClassification(BertPreTrainedModel):
         output_hidden_states=None,
         return_dict=None,
     ):
-        r"""
-        labels (:obj:`torch.LongTensor` of shape :obj:`(batch_size,)`, `optional`):
-            Labels for computing the sequence classification/regression loss. Indices should be in :obj:`[0, ...,
-            config.num_labels - 1]`. If :obj:`config.num_labels == 1` a regression loss is computed (Mean-Square loss),
-            If :obj:`config.num_labels > 1` a classification loss is computed (Cross-Entropy).
-        """
+
         return_dict = return_dict if return_dict is not None else self.config.use_return_dict
 
-        outputs = self.bert(
+        outputs = self.roberta(
             input_ids,
             attention_mask=attention_mask,
             token_type_ids=token_type_ids,
@@ -277,11 +209,8 @@ class BertForSequenceClassification(BertPreTrainedModel):
             output_hidden_states=output_hidden_states,
             return_dict=return_dict,
         )
-
-        pooled_output = outputs[1]
-
-        pooled_output = self.dropout(pooled_output)
-        logits = self.classifier(pooled_output)
+        sequence_output = outputs[0]
+        logits = self.classifier(sequence_output)
 
         loss = None
         if labels is not None:

@@ -210,7 +210,8 @@ def load_and_cache_examples(args, task, tokenizer, dataset_type, evaluate=False)
     input_mode = input_modes[task]
     # Load data features from cache or dataset file
     cached_features_file = os.path.join(args.data_dir,
-                                        'cached_KT-attn-bert-_{}_{}_origin_seq_length={}_max_seq_length={}'.format(
+                                        'cached_KT-attn-{}_{}_{}_origin_seq_length={}_max_seq_length={}'.format(
+                                            args.model_type,
                                             task,
                                             dataset_type,
                                             str(args.origin_seq_length),
@@ -531,6 +532,9 @@ def convert_examples_to_features_sentence_single(args, examples, origin_seq_leng
 
         a_idx_set.add(a_idx)
 
+        if 'roberta' in args.model_type:
+            segment_ids = [0] * max_seq_length
+
         features.append(
             InputFeatures(input_ids=input_ids,
                           input_mask=mask_index,
@@ -562,16 +566,16 @@ def _truncate_seq_pair(tokens_a, tokens_b, max_length):
 
 
 processors = {
-    "quality_control": QualityControlProcessor,
+    "eem": QualityControlProcessor,
     "sst2": Sst2Processor,
 }
 
 output_modes = {
-    "quality_control": "classification",
+    "eem": "classification",
     "sst2": "classification",
 }
 
 input_modes = {
-    "quality_control": "sentence_pair",
+    "eem": "sentence_pair",
     "sst2": "sentence_single",
 }
