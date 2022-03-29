@@ -44,7 +44,7 @@ def load_and_cache_examples(args, processor, tokenizer, dataset_type, evaluate=F
 
     input_ids = torch.tensor([f.input_ids for f in features], dtype=torch.long)
     input_mask = torch.tensor([f.input_mask for f in features], dtype=torch.long)
-    segment_ids = torch.tensor([f.segment_ids for f in features], dtype=torch.long)
+    # segment_ids = torch.tensor([f.segment_ids for f in features], dtype=torch.long)
     mlm_labels = torch.tensor([f.mlm_labels for f in features], dtype=torch.long)
 
     mention_span = torch.tensor([f.mention_span for f in features], dtype=torch.float)
@@ -53,7 +53,7 @@ def load_and_cache_examples(args, processor, tokenizer, dataset_type, evaluate=F
 
     # entity_labels = torch.tensor([f.entity_labels for f in features], dtype=torch.long)
 
-    dataset = TensorDataset(input_ids, input_mask, segment_ids, mlm_labels,
+    dataset = TensorDataset(input_ids, input_mask, mlm_labels,
                             mention_span, mention_entity, description_entity)
     return dataset
 
@@ -66,8 +66,8 @@ def convert_examples_to_features(examples, max_seq_length, tokenizer,):
         if ex_index % 10000 == 0:
             logger.info("Writing example %d of %d" % (ex_index, len(examples)))
 
-        if ex_index > 10000:
-            break
+        # if ex_index > 50000:
+        #     break
 
         qid, description_entity, description = x.qid, x.entity_name, x.description
         des_mentions_list = x.des_mentions
@@ -158,7 +158,7 @@ def convert_examples_to_features(examples, max_seq_length, tokenizer,):
             features.append(
                 InputFeatures(input_ids=input_ids,
                               input_mask=input_mask,
-                              segment_ids=segment_ids,
+                              # segment_ids=segment_ids,  # 注释掉可以省一些GPU内存？在运行中动态创建
                               mlm_labels=mlm_labels,
                               mention_span = span_id,
                               mention_entity=mention_entity, # 这需要转换成idx表示的
@@ -185,7 +185,7 @@ class InputFeatures(object):
                  mention_span=None, mention_entity=None, description_entity=None, entity_labels=None,):
         self.input_ids = input_ids
         self.input_mask = input_mask
-        self.segment_ids = segment_ids
+        # self.segment_ids = segment_ids
         self.mlm_labels = mlm_labels
 
         self.mention_span = mention_span

@@ -22,7 +22,7 @@ def get_args():
 
     # run config
     parser.add_argument("--max_seq_length", type=int, default=32, help="max lenght of token sequence")
-    parser.add_argument("--num_neg_sample", type=int, default=10, help="max lenght of token sequence")
+    # parser.add_argument("--num_neg_sample", type=int, default=10, help="max lenght of token sequence")
     parser.add_argument("--entity_emb_size", type=int, default=32, help="the dimension of entity embeddings")
     parser.add_argument("--do_train", action='store_true',
                         help="Whether to run training.")
