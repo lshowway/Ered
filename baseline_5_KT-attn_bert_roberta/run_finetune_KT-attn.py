@@ -255,7 +255,7 @@ def train(args, train_dataset, model, tokenizer):
     tr_loss, logging_loss = 0.0, 0.0
     model.zero_grad()
     if args.local_rank in [-1, 0]:
-        tb_writer = SummaryWriter(log_dir="../runs_roberta_ft_ads/" + args.my_model_name)
+        tb_writer = SummaryWriter(log_dir="runs/" + args.my_model_name)
     train_iterator = trange(int(args.num_train_epochs), desc="Epoch", disable=args.local_rank not in [-1, 0])
     set_seed(args)  # Added here for reproductibility (even between python 2 and 3)
     for epoch in train_iterator:
@@ -301,8 +301,8 @@ def train(args, train_dataset, model, tokenizer):
                                        0] and args.evaluate_during_training:  # Only evaluate when single GPU otherwise metrics may not average well
                     results = evaluate(args, model, tokenizer)
                     logger.info('dev results_step_%s: ' % global_step, results)
-                    for key, value in results.items():
-                        tb_writer.add_scalar('eval_{}'.format(key), value, global_step)
+                    # for key, value in results.items():
+                    #     tb_writer.add_scalar('eval_{}'.format(key), value, global_step)
                 tb_writer.add_scalar('lr', scheduler.get_lr()[0], global_step)
                 tb_writer.add_scalar('loss', (tr_loss - logging_loss) / args.logging_steps, global_step)
                 logging_loss = tr_loss
@@ -325,8 +325,8 @@ def train(args, train_dataset, model, tokenizer):
         logger.info("***** evaluating *****")
         result = evaluate(args, model, tokenizer, prefix="")
         logger.info('dev results_epoch_%s: %s' % (epoch, result))
-        for key, value in result.items():
-            tb_writer.add_scalar('eval_{}'.format(key), value, global_step)
+        # for key, value in result.items():
+        #     tb_writer.add_scalar('eval_{}'.format(key), value, global_step)
         if 0 < args.max_steps < global_step:
             train_iterator.close()
             break

@@ -1042,6 +1042,7 @@ class Sst2Processor(DataProcessor):
             guid = "%s-%s" % (dataset_type, i)
             text_a = line['sent']
             neighbour = [[x[0]] for x in line['ents'] if x[-1] > 0.2]
+
             label = label_map[line['label']]
             examples.append(
                 InputExample(guid=guid, text_a=text_a, text_b=None, neighbour=neighbour, label=label))

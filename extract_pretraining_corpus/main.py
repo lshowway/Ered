@@ -150,14 +150,10 @@ def remove_entity_in_LUKE_vocab(LUKE_vocab_file, entity_vocab_file, output_entit
     # LUKE vocab
     LUKE_vocab = set()
     with open(LUKE_vocab_file, encoding='utf-8') as fr:
-        next(fr)
-        next(fr)
-        next(fr)
         count = 0
         for x in fr:
             count += 1
-            x = json.loads(x)
-            entity = x['entities'][0][0]
+            entity = x.split('\t')[0]
             entity = entity.replace(' ', '_')
             LUKE_vocab.add(entity)
 
@@ -190,6 +186,8 @@ def read_used_entity(file):
 
 def rewrite_abstract(used_entities, abstract_file, output_file):
     all_lines = read_json_lines(abstract_file)
+    print("the number of abstracts: ", len(all_lines))
+    print('the number of entity vocabulary: ', len(used_entities))
 
     new_all_lines = []
     for x in all_lines:
@@ -203,6 +201,7 @@ def rewrite_abstract(used_entities, abstract_file, output_file):
             mention_entity = z['mention_entity']
             if mention_entity in used_entities:
                 new_abstract_mentions_list.append(z)
+        x['abstract_mentions'] = new_abstract_mentions_list
         new_all_lines.append(x) # 329w
 
     newlist = sorted(new_all_lines, key=itemgetter('global_len'), reverse=True)
@@ -211,10 +210,12 @@ def rewrite_abstract(used_entities, abstract_file, output_file):
             json.dump(x, fw)
             fw.write('\n')
             fw.flush()
+    print('the number of abstracts by removing entities not in vocabulary: ', len(newlist))
 
 
 def discrite_abstract(abstract_file, output_file):
     raw_abstracts = read_json_lines(abstract_file)
+    print("the number of abstracts: ", len(raw_abstracts))
     new_abstracts = []
     count = 0
     for x in raw_abstracts:
@@ -225,7 +226,7 @@ def discrite_abstract(abstract_file, output_file):
         abstract_mentions_list = x['abstract_mentions']
 
         if not abstract_mentions_list:
-            count += 1
+            count += 1 # 775
         for i in range(len(abstract_mentions_list)):
             line_dict = {}
 
@@ -235,12 +236,12 @@ def discrite_abstract(abstract_file, output_file):
             line_dict['abstract'] = abstract
             line_dict['abstract_mentions'] = [abstract_mentions_list[i]]
             new_abstracts.append(line_dict) #
-
+    print("the number of abstracts segments: ", len(new_abstracts))
     with open(output_file, 'w', encoding='utf-8') as fw:
         for x in new_abstracts:
             abstract = x["abstract"]
             global_len = x['global_len']
-            if global_len > 2000:  # 修剪一下字符大于2K个的
+            if global_len > 1500:  # 修剪一下字符大于2K个的
                 start, end = x["abstract_mentions"][0]["mention_span"]
                 span = end - start
 
@@ -278,15 +279,15 @@ if __name__ == "__main__":
 
 
     # 4. remove entity in entity_qid.tsv, which is also in vocab.txt
-    remove_entity_in_roberta_large_vocab(roberta_large_vocab='../knowledge_resource/vocab.json',
-                                         entity_qid='../knowledge_resource/dbpedia_abstract_corpus/entity_qid.tsv',
-                                         output_entity_qid_remove_roberta='../knowledge_resource/dbpedia_abstract_corpus/entity_qid_v2.tsv')
-
-
-    # 5. remove entity in LUKE vocab
-    # remove_entity_in_LUKE_vocab(LUKE_vocab_file="../knowledge_resource/output_ent-vocab.jsonl",
-    #                             entity_vocab_file='../knowledge_resource/dbpedia_abstract_corpus/entity_qid_v2.tsv',
-    #                             output_entity_vocab='../knowledge_resource/dbpedia_abstract_corpus/entity_qid_v3.tsv')
+    # remove_entity_in_roberta_large_vocab(roberta_large_vocab='../knowledge_resource/vocab.json',
+    #                                      entity_qid='../knowledge_resource/dbpedia_abstract_corpus/entity_qid.tsv',
+    #                                      output_entity_qid_remove_roberta='../knowledge_resource/dbpedia_abstract_corpus/entity_qid_v2.tsv')
+    #
+    #
+    # # 5. remove entity in LUKE vocab
+    remove_entity_in_LUKE_vocab(LUKE_vocab_file="../knowledge_resource/entity_vocab.tsv",
+                                entity_vocab_file='../knowledge_resource/dbpedia_abstract_corpus/entity_qid_v2.tsv',
+                                output_entity_vocab='../knowledge_resource/dbpedia_abstract_corpus/entity_qid_v3.tsv')
 
     # 6. rewrite abstract file, v3, only filtered entities are kept
     used_entities = read_used_entity('../knowledge_resource/dbpedia_abstract_corpus/entity_qid_v3.tsv')
