@@ -39,7 +39,6 @@ logger = logging.getLogger(__name__)
 
 
 def load_model(args):
-
     config = AutoConfig.from_pretrained(args.model_name_or_path)
     # add K config
     config.entity_vocab_size = args.entity_vocab_size
@@ -48,19 +47,11 @@ def load_model(args):
 
     model = KModulePretrainingModel(config)  # this is KModule
     Kmodule_state_dict = model.state_dict()  # KFormers的全部参数
-    # for x in Kmodule_state_dict.keys():
-    #     print(x)
 
     # initialize with roberta
     pretrained_state_dict = AutoModelForPreTraining.from_pretrained(args.model_name_or_path).state_dict()
-
-    # for x in pretrained_state_dict.keys():
-    #     print(x)
-
     news_k_state_dict = OrderedDict()
     for key, value in pretrained_state_dict.items():
-        if "lm_head" in key:
-            key = key.replace('lm_head', 'cls.mlm_predict')
         if key in Kmodule_state_dict:
             news_k_state_dict[key] = value
     Kmodule_state_dict.update(news_k_state_dict)
@@ -77,10 +68,60 @@ def set_seed(args):
         torch.cuda.manual_seed_all(args.seed)
 
 
+def do_eval(model, args, val_dataset, global_step=None, entity_set=None):
+    val_sampler = SequentialSampler(val_dataset)
+    val_dataloader = DataLoader(val_dataset, sampler=val_sampler, batch_size=args.per_gpu_eval_batch_size)
+
+    preds = None
+    out_label_ids = None
+    eval_iterator = tqdm(val_dataloader, desc="Evaluating", disable=args.local_rank not in [-1, 0])
+    total_loss, total_step = 0.0, 0
+    for step, batch in enumerate(eval_iterator):
+        total_step += 1
+
+        # if step > 3:
+        #     break
+
+        model.eval()
+        batch = tuple(t.to(args.device) for t in batch)
+        with torch.no_grad():
+
+            input_ids, attention_mask, token_type_ids = batch[0], batch[1], batch[2]
+            pos_entities = batch[-1]
+            batch_size = pos_entities.size(0)
+            neg_entities = torch.tensor(random.sample(entity_set, args.num_neg_sample * batch_size))
+            neg_entities = neg_entities.reshape(batch_size, args.num_neg_sample).to(args.device)
+            candidate_entities = torch.cat([pos_entities.reshape(batch_size, -1), neg_entities], dim=-1)  # 正负样本组成候选
+            entity_labels = torch.zeros(candidate_entities.size())
+            entity_labels[:, 0] = 1  # 这是候选样本的标签：0/1
+
+            # shuffle: train need, dev not need
+
+            inputs = {"description_ids": input_ids,
+                      "description_attention_mask": attention_mask,
+                      "description_segment_ids": token_type_ids if args.model_type in ['bert', 'unilm'] else None,
+                      "candidate_entities": candidate_entities,
+                      "entity_labels": entity_labels,
+                      }
+
+            logits, eval_loss, entity_labels = model(**inputs)
+            total_loss += eval_loss.item()
+            if preds is None:
+                preds = logits.detach().cpu().numpy()
+                out_label_ids = entity_labels.detach().cpu().numpy()
+            else:
+                preds = np.append(preds, logits.detach().cpu().numpy(), axis=0)
+                out_label_ids = np.append(out_label_ids, entity_labels.detach().cpu().numpy(), axis=0)
+
+    result = compute_metrics(preds, out_label_ids)
+    result['eval_loss'] = round(total_loss / total_step, 8)
+    return result
+
+
 def do_train(args, model, train_dataset, val_dataset=None, test_dataset=None, entity_set=None):
     args.total_batch_size = args.per_gpu_train_batch_size * max(1, args.n_gpu)
     train_sampler = RandomSampler(train_dataset) if args.local_rank == -1 else DistributedSampler(train_dataset)
-    train_dataloader = DataLoader(train_dataset, sampler=train_sampler, batch_size=args.total_batch_size, drop_last=True, num_workers=8, pin_memory=True)
+    train_dataloader = DataLoader(train_dataset, sampler=train_sampler, batch_size=args.total_batch_size, pin_memory=False, num_workers=2)
 
     param_optimizer = list(model.named_parameters())
     no_decay = ['bias', 'LayerNorm.bias', 'LayerNorm.weight']
@@ -113,7 +154,6 @@ def do_train(args, model, train_dataset, val_dataset=None, test_dataset=None, en
     # multi-gpu training (should be after apex fp16 initialization)
     if args.n_gpu > 1:  # DP方式
         model = torch.nn.DataParallel(model)
-        # print('not use')
     # Distributed training (should be after apex fp16 initialization)
     if args.local_rank != -1:  # DDP方式
         model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[args.local_rank],
@@ -122,7 +162,7 @@ def do_train(args, model, train_dataset, val_dataset=None, test_dataset=None, en
 
     # Train!
     logger.info("***** Running training *****")
-    logger.info("  Num examples = %d", len(train_dataset))
+    logger.info("  Num examples = %d", len(train_dataloader) * args.total_batch_size)
     logger.info("  Num Epochs = %d", args.num_train_epochs)
     logger.info("  Instantaneous batch size per GPU = %d", args.per_gpu_train_batch_size)
     logger.info("  Number of GPU = %d", args.n_gpu)
@@ -139,50 +179,52 @@ def do_train(args, model, train_dataset, val_dataset=None, test_dataset=None, en
     train_iterator = trange(args.num_train_epochs, desc="Epoch", disable=args.local_rank not in [-1, 0])
     set_seed(args)  # Added here for reproducebility (even between python 2 and 3)
     start_time = time.time()
-
-    # 对角矩阵
-    # mention_entity_labels = torch.eye(args.total_batch_size, device=args.device)
-    # des_entity_labels = torch.eye(args.total_batch_size, device=args.device)
-
-    mention_entity_labels = torch.range(0, args.total_batch_size - 1, device=args.device, dtype=torch.long)
-    des_entity_labels = torch.range(0, args.total_batch_size - 1, device=args.device, dtype=torch.long)
-
+    best_dev_result = 0.0
     for epoch in train_iterator:
         if epoch > 0:
             train_sampler = RandomSampler(train_dataset) if args.local_rank == -1 else DistributedSampler(train_dataset)
-            train_dataloader = DataLoader(train_dataset, sampler=train_sampler, batch_size=args.total_batch_size, drop_last=True, num_workers=8, pin_memory=True)
+            train_dataloader = DataLoader(train_dataset, sampler=train_sampler, batch_size=args.total_batch_size)
         epoch_iterator = tqdm(train_dataloader, desc="Training", disable=args.local_rank not in [-1, 0])
-        model.zero_grad(set_to_none=True)
         for step, batch in enumerate(epoch_iterator):
+            loss = 0.0
             model.train()
-            # def batch_train(batch, global_step):
             batch = tuple(t.to(args.device) for t in batch)
 
-            # input_ids, attention_mask, token_label = batch[0], batch[1], batch[2]
-            # mention_span_idx, mention_entity_candidates = batch[3], batch[4]
-            # des_entity_candidates = batch[5]
+            input_ids, attention_mask, token_type_ids, token_label = batch[0], batch[1], batch[2], batch[3]
+            mention_span_idx, mention_entity_candidates = batch[4], batch[5]
+            des_entity_candidates = batch[6]
 
-            # # 对角矩阵
-            # mention_entity_labels = torch.eye(mention_entity_candidates.size(0)).to(args.device)
-            # des_entity_labels = torch.eye(des_entity_candidates.size(0)).to(args.device)
+            # pos_entities = batch[-1]
+            # batch_size = pos_mention_entities.size(0)
+            # # N = 10 # 10个负样本
+            # neg_entities = torch.tensor(random.sample(entity_set, args.num_neg_sample * batch_size))
+            # neg_entities = neg_entities.reshape(batch_size, args.num_neg_sample).to(args.device)
+            # candidate_entities = torch.cat([pos_entities.reshape(batch_size, -1), neg_entities], dim=-1)  # 正负样本组成候选
+            # entity_labels = torch.zeros(candidate_entities.size())
+            # entity_labels[:, 0] = 1 # 这是候选样本的标签：0/1
 
-            inputs = {"input_ids": batch[0],
-                      "input_mask": batch[1],
-                      # "input_segment": token_type_ids if args.model_type in ['bert', 'unilm'] else None,
-                      "input_segment": None,
-                      "mention_token_label": batch[2],
-                      "mention_span_idx": batch[3],
-                      "mention_entity_candidates": batch[4],
-                      "des_entity_candidates": batch[5],
-                      "mention_entity_labels": mention_entity_labels,  # 这个的存在用于计算二值交叉熵
-                      "des_entity_labels": des_entity_labels  # 这个的存在用于计算二值交叉熵
+            # 对角矩阵
+            mention_entity_labels = torch.eye(mention_entity_candidates.size(0), device=args.device)
+            des_entity_labels = torch.eye(des_entity_candidates.size(0), device=args.device)
+
+            # shuffle: train need, dev not need
+            # indexes = torch.randperm(args.num_neg_sample+1)
+            # candidate_entities = candidate_entities[:, indexes]
+            # entity_labels = entity_labels[:, indexes]
+
+
+            inputs = {"input_ids": input_ids,
+                      "input_mask": attention_mask,
+                      "input_segment": token_type_ids if args.model_type in ['bert', 'unilm'] else None,
+                      "mention_token_label": token_label,
+                      "mention_span_idx": mention_span_idx,
+                      "mention_entity_candidates": mention_entity_candidates,
+                      "des_entity_candidates": des_entity_candidates,
+                      "mention_entity_labels": mention_entity_labels, # 这个的存在用于计算二值交叉熵
+                      "des_entity_labels": des_entity_labels # 这个的存在用于计算二值交叉熵
                       }
 
             batch_loss = model(**inputs)
-
-            del inputs
-            del batch
-
             if args.n_gpu > 1:
                 batch_loss = batch_loss.mean()  # mean() to average on multi-gpu parallel training
             if args.gradient_accumulation_steps > 1:
@@ -194,21 +236,28 @@ def do_train(args, model, train_dataset, val_dataset=None, test_dataset=None, en
             else:
                 batch_loss.backward()
                 torch.nn.utils.clip_grad_norm_(model.parameters(), args.max_grad_norm)
-
+            loss += batch_loss.item()
             if (step + 1) % args.gradient_accumulation_steps == 0:
                 optimizer.step()
                 scheduler.step()  # Update learning rate schedule
-                model.zero_grad(set_to_none=True)
+                model.zero_grad()
                 global_step += 1
-                torch.cuda.empty_cache()
-
             if args.local_rank in [-1, 0] and args.logging_steps > 0 and global_step % args.logging_steps == 0:
-                t = batch_loss.item()
-                logger.info("epoch {}, step {}, global_step {}, train_loss: {:.5f}".format(epoch, step + 1, global_step, t))
+                logger.info("epoch {}, step {}, global_step {}, train_loss: {:.5f}".format(epoch, step + 1, global_step, loss))
+                # print('epoch: {}, global step: {}, dev results: {}**'.format(epoch, global_step, eval_results))
                 # Log metrics
                 tb_writer.add_scalar('lr', scheduler.get_last_lr()[0], global_step)
-                tb_writer.add_scalar('loss', t, global_step)
-
+                tb_writer.add_scalar('loss', loss, global_step)
+            # if args.local_rank in [-1, 0] and args.eval_steps > 0 and global_step > 0 and global_step % args.eval_steps == 0:
+            #     eval_results = do_eval(model, args, val_dataset, global_step, entity_set)
+            #     t = eval_results["eval_loss"]
+            #     if t < best_dev_result:
+            #         best_dev_result = eval_results["eval_loss"]
+            #         logger.info('epoch: {}, global step: {}, dev results: {}**'.format(epoch, global_step, eval_results))
+            #         # print('epoch: {}, global step: {}, dev results: {}**'.format(epoch, global_step, eval_results))
+            #     else:
+            #         logger.info('epoch: {}, global step: {}, dev results: {}'.format(epoch, global_step, eval_results))
+            #         # print('epoch: {}, global step: {}, dev results: {}'.format(epoch, global_step, eval_results))
             if args.local_rank in [-1, 0] and args.save_steps > 0 and global_step > 0 and global_step % args.save_steps == 0:
                 # Save model checkpoint
                 output_dir = os.path.join(args.output_dir, 'checkpoint-{}'.format(global_step))
@@ -228,12 +277,21 @@ def do_train(args, model, train_dataset, val_dataset=None, test_dataset=None, en
                             global_step - args.max_save_checkpoints * args.save_steps)))
                     except OSError as e:
                         print(e)
-
             if 0 < args.max_steps < global_step:
                 epoch_iterator.close()
                 break
 
-
+        # evaluate per epoch
+        # if args.local_rank in [-1, 0]:
+        #     eval_results = do_eval(model, args, val_dataset, global_step, entity_set)
+        #     t = eval_results["eval_loss"]
+        #     if t < best_dev_result:
+        #         best_dev_result = eval_results["eval_loss"]
+        #         logger.info('epoch: {}, global step: {}, dev results: {}**'.format(epoch, global_step, eval_results))
+        #         # print('epoch: {}, global step: {}, dev results: {}**'.format(epoch, global_step, eval_results))
+        #     else:
+        #         logger.info('epoch: {}, global step: {}, dev results: {}'.format(epoch, global_step, eval_results))
+        #         # print('epoch: {}, global step: {}, dev results: {}'.format(epoch, global_step, eval_results))
         if args.local_rank in [-1, 0] and args.save_steps > 0 and global_step > 0 and global_step % args.save_steps == 0:
             # Save model checkpoint
             # output_dir = os.path.join(args.output_dir, 'checkpoint-{}'.format(global_step))
@@ -265,9 +323,8 @@ def do_train(args, model, train_dataset, val_dataset=None, test_dataset=None, en
 
 def main():
     args = get_args()
-
-    # for torchrun
-    args.local_rank = int(os.environ["LOCAL_RANK"])
+    # if args.eval_steps is None:
+    #     args.eval_steps = args.save_steps * 10
 
     # Setup distant debugging if needed
     if args.server_ip and args.server_port:
@@ -338,7 +395,6 @@ def main():
 
 if __name__ == '__main__':
     main()
-
 
 
 
