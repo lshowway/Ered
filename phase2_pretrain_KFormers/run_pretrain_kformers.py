@@ -121,7 +121,7 @@ def do_eval(model, args, val_dataset, global_step=None, entity_set=None):
 def do_train(args, model, train_dataset, val_dataset=None, test_dataset=None, entity_set=None):
     args.total_batch_size = args.per_gpu_train_batch_size * max(1, args.n_gpu)
     train_sampler = RandomSampler(train_dataset) if args.local_rank == -1 else DistributedSampler(train_dataset)
-    train_dataloader = DataLoader(train_dataset, sampler=train_sampler, batch_size=args.total_batch_size, pin_memory=False, num_workers=2)
+    train_dataloader = DataLoader(train_dataset, sampler=train_sampler, batch_size=args.total_batch_size, drop_last=True, pin_memory=False, num_workers=2)
 
     param_optimizer = list(model.named_parameters())
     no_decay = ['bias', 'LayerNorm.bias', 'LayerNorm.weight']
@@ -179,49 +179,34 @@ def do_train(args, model, train_dataset, val_dataset=None, test_dataset=None, en
     train_iterator = trange(args.num_train_epochs, desc="Epoch", disable=args.local_rank not in [-1, 0])
     set_seed(args)  # Added here for reproducebility (even between python 2 and 3)
     start_time = time.time()
-    best_dev_result = 0.0
+
+    # 对角矩阵
+    # mention_entity_labels = torch.eye(args.total_batch_size, device=args.device)
+    # des_entity_labels = torch.eye(args.total_batch_size, device=args.device)
+
+    mention_entity_labels = torch.arange(0, args.total_batch_size, device=args.device, dtype=torch.long)
+    des_entity_labels = torch.arange(0, args.total_batch_size, device=args.device, dtype=torch.long)
+
     for epoch in train_iterator:
         if epoch > 0:
             train_sampler = RandomSampler(train_dataset) if args.local_rank == -1 else DistributedSampler(train_dataset)
-            train_dataloader = DataLoader(train_dataset, sampler=train_sampler, batch_size=args.total_batch_size)
+            train_dataloader = DataLoader(train_dataset, sampler=train_sampler, batch_size=args.total_batch_size, drop_last=True, pin_memory=False, num_workers=2)
         epoch_iterator = tqdm(train_dataloader, desc="Training", disable=args.local_rank not in [-1, 0])
         for step, batch in enumerate(epoch_iterator):
             loss = 0.0
             model.train()
             batch = tuple(t.to(args.device) for t in batch)
 
-            input_ids, attention_mask, token_type_ids, token_label = batch[0], batch[1], batch[2], batch[3]
-            mention_span_idx, mention_entity_candidates = batch[4], batch[5]
-            des_entity_candidates = batch[6]
-
-            # pos_entities = batch[-1]
-            # batch_size = pos_mention_entities.size(0)
-            # # N = 10 # 10个负样本
-            # neg_entities = torch.tensor(random.sample(entity_set, args.num_neg_sample * batch_size))
-            # neg_entities = neg_entities.reshape(batch_size, args.num_neg_sample).to(args.device)
-            # candidate_entities = torch.cat([pos_entities.reshape(batch_size, -1), neg_entities], dim=-1)  # 正负样本组成候选
-            # entity_labels = torch.zeros(candidate_entities.size())
-            # entity_labels[:, 0] = 1 # 这是候选样本的标签：0/1
-
-            # 对角矩阵
-            mention_entity_labels = torch.eye(mention_entity_candidates.size(0), device=args.device)
-            des_entity_labels = torch.eye(des_entity_candidates.size(0), device=args.device)
-
-            # shuffle: train need, dev not need
-            # indexes = torch.randperm(args.num_neg_sample+1)
-            # candidate_entities = candidate_entities[:, indexes]
-            # entity_labels = entity_labels[:, indexes]
-
-
-            inputs = {"input_ids": input_ids,
-                      "input_mask": attention_mask,
-                      "input_segment": token_type_ids if args.model_type in ['bert', 'unilm'] else None,
-                      "mention_token_label": token_label,
-                      "mention_span_idx": mention_span_idx,
-                      "mention_entity_candidates": mention_entity_candidates,
-                      "des_entity_candidates": des_entity_candidates,
-                      "mention_entity_labels": mention_entity_labels, # 这个的存在用于计算二值交叉熵
-                      "des_entity_labels": des_entity_labels # 这个的存在用于计算二值交叉熵
+            inputs = {"input_ids": batch[0],
+                      "input_mask": batch[1],
+                      # "input_segment": token_type_ids if args.model_type in ['bert', 'unilm'] else None,
+                      "input_segment": None,
+                      "mention_token_label": batch[2],
+                      "mention_span_idx": batch[3],
+                      "mention_entity_candidates": batch[4],
+                      "des_entity_candidates": batch[5],
+                      "mention_entity_labels": mention_entity_labels,  # 这个的存在用于计算二值交叉熵
+                      "des_entity_labels": des_entity_labels  # 这个的存在用于计算二值交叉熵
                       }
 
             batch_loss = model(**inputs)

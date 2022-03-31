@@ -51,10 +51,13 @@ def load_and_cache_examples(args, processor, tokenizer, dataset_type, evaluate=F
     mention_entity = torch.tensor([f.mention_entity for f in features], dtype=torch.long)
     description_entity = torch.tensor([f.description_entity for f in features], dtype=torch.long)
 
-    # entity_labels = torch.tensor([f.entity_labels for f in features], dtype=torch.long)
 
-    dataset = TensorDataset(input_ids, input_mask, segment_ids, mlm_labels,
+    # dataset = TensorDataset(input_ids, input_mask, segment_ids, mlm_labels,
+    #                         mention_span, mention_entity, description_entity)
+
+    dataset = TensorDataset(input_ids, input_mask, mlm_labels,
                             mention_span, mention_entity, description_entity)
+
     return dataset
 
 
