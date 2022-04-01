@@ -209,16 +209,16 @@ class KModulePretrainingModel(nn.Module):
         # 第二个loss，对比损失，mention=>entity
 
         # m2e_logits = torch.matmul(t1, mention_output).squeeze(-1) # batch N+1
-        # m2e_loss = self.binary_CE_loss(m2e_logits.view(-1, 2), mention_entity_labels.view(-1, 2))
-        m2e_loss = self.cross_entropy_loss(m2e_logits.view(-1, input_ids.size(0)), mention_entity_labels.view(-1))
+        m2e_loss = self.binary_CE_loss(m2e_logits.view(-1, 2), mention_entity_labels.view(-1, 2))
+        # m2e_loss = self.cross_entropy_loss(m2e_logits.view(-1, input_ids.size(0)), mention_entity_labels.view(-1))
 
         # 第三个损失，对比损失，description=>entity
         # pooler_output = main_output.pooler_output  # batch, 768
         # t2 = self.entity_embeddings(des_entity_candidates)
         # d2e_logits = torch.matmul(t2, pooler_output.unsqueeze(1).permute(0, 2, 1)).squeeze(-1)  # batch N+1
-        # d2e_loss = self.binary_CE_loss(d2e_logits.view(-1, 2), des_entity_labels.view(-1, 2))
-        d2e_loss = self.cross_entropy_loss(d2e_logits.view(-1, input_ids.size(0)), des_entity_labels.view(-1))
+        d2e_loss = self.binary_CE_loss(d2e_logits.view(-1, 2), des_entity_labels.view(-1, 2))
+        # d2e_loss = self.cross_entropy_loss(d2e_logits.view(-1, input_ids.size(0)), des_entity_labels.view(-1))
 
-        total_loss = m2e_loss # + d2e_loss + mlm_loss
+        total_loss = m2e_loss + d2e_loss + mlm_loss
 
         return total_loss

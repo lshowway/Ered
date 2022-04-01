@@ -120,8 +120,12 @@ def do_eval(model, args, val_dataset, global_step=None, entity_set=None):
 
 def do_train(args, model, train_dataset, val_dataset=None, test_dataset=None, entity_set=None):
     args.total_batch_size = args.per_gpu_train_batch_size * max(1, args.n_gpu)
-    train_sampler = RandomSampler(train_dataset) if args.local_rank == -1 else DistributedSampler(train_dataset)
-    train_dataloader = DataLoader(train_dataset, sampler=train_sampler, batch_size=args.total_batch_size, drop_last=True, pin_memory=False, num_workers=2)
+    if args.local_rank == -1:
+        train_sampler = RandomSampler(train_dataset)
+        print('random ~~~~')
+    else:
+        train_sampler = DistributedSampler(train_dataset)
+    train_dataloader = DataLoader(train_dataset, sampler=train_sampler, batch_size=args.total_batch_size, drop_last=True, pin_memory=True, num_workers=8)
 
     param_optimizer = list(model.named_parameters())
     no_decay = ['bias', 'LayerNorm.bias', 'LayerNorm.weight']
@@ -181,19 +185,18 @@ def do_train(args, model, train_dataset, val_dataset=None, test_dataset=None, en
     start_time = time.time()
 
     # 对角矩阵
-    # mention_entity_labels = torch.eye(args.total_batch_size, device=args.device)
-    # des_entity_labels = torch.eye(args.total_batch_size, device=args.device)
+    mention_entity_labels = torch.eye(args.total_batch_size, device=args.device)
+    des_entity_labels = torch.eye(args.total_batch_size, device=args.device)
 
-    mention_entity_labels = torch.arange(0, args.total_batch_size, device=args.device, dtype=torch.long)
-    des_entity_labels = torch.arange(0, args.total_batch_size, device=args.device, dtype=torch.long)
+    # mention_entity_labels = torch.arange(0, args.total_batch_size, device=args.device, dtype=torch.long)
+    # des_entity_labels = torch.arange(0, args.total_batch_size, device=args.device, dtype=torch.long)
 
     for epoch in train_iterator:
         if epoch > 0:
             train_sampler = RandomSampler(train_dataset) if args.local_rank == -1 else DistributedSampler(train_dataset)
-            train_dataloader = DataLoader(train_dataset, sampler=train_sampler, batch_size=args.total_batch_size, drop_last=True, pin_memory=False, num_workers=2)
+            train_dataloader = DataLoader(train_dataset, sampler=train_sampler, batch_size=args.total_batch_size, drop_last=True, pin_memory=True, num_workers=8)
         epoch_iterator = tqdm(train_dataloader, desc="Training", disable=args.local_rank not in [-1, 0])
         for step, batch in enumerate(epoch_iterator):
-            loss = 0.0
             model.train()
             batch = tuple(t.to(args.device) for t in batch)
 
@@ -221,18 +224,22 @@ def do_train(args, model, train_dataset, val_dataset=None, test_dataset=None, en
             else:
                 batch_loss.backward()
                 torch.nn.utils.clip_grad_norm_(model.parameters(), args.max_grad_norm)
-            loss += batch_loss.item()
+            # loss += batch_loss.item()
             if (step + 1) % args.gradient_accumulation_steps == 0:
                 optimizer.step()
                 scheduler.step()  # Update learning rate schedule
                 model.zero_grad()
                 global_step += 1
+                # torch.clear_autocast_cache()
+                del inputs
+                torch.cuda.empty_cache()
             if args.local_rank in [-1, 0] and args.logging_steps > 0 and global_step % args.logging_steps == 0:
-                logger.info("epoch {}, step {}, global_step {}, train_loss: {:.5f}".format(epoch, step + 1, global_step, loss))
+                t = batch_loss.detach()
+                logger.info("epoch {}, step {}, global_step {}, train_loss: {:.5f}".format(epoch, step + 1, global_step, t))
                 # print('epoch: {}, global step: {}, dev results: {}**'.format(epoch, global_step, eval_results))
                 # Log metrics
                 tb_writer.add_scalar('lr', scheduler.get_last_lr()[0], global_step)
-                tb_writer.add_scalar('loss', loss, global_step)
+                tb_writer.add_scalar('loss', t, global_step)
             # if args.local_rank in [-1, 0] and args.eval_steps > 0 and global_step > 0 and global_step % args.eval_steps == 0:
             #     eval_results = do_eval(model, args, val_dataset, global_step, entity_set)
             #     t = eval_results["eval_loss"]

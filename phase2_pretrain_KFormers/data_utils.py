@@ -44,7 +44,7 @@ def load_and_cache_examples(args, processor, tokenizer, dataset_type, evaluate=F
 
     input_ids = torch.tensor([f.input_ids for f in features], dtype=torch.long)
     input_mask = torch.tensor([f.input_mask for f in features], dtype=torch.long)
-    segment_ids = torch.tensor([f.segment_ids for f in features], dtype=torch.long)
+    # segment_ids = torch.tensor([f.segment_ids for f in features], dtype=torch.long)
     mlm_labels = torch.tensor([f.mlm_labels for f in features], dtype=torch.long)
 
     mention_span = torch.tensor([f.mention_span for f in features], dtype=torch.float)
