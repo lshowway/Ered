@@ -19,6 +19,7 @@ def get_args():
     parser.add_argument("--data_dir", default="G:\D\MSRA\knowledge_aware\data\knowledge\pretrain\wikidata_description", type=str, required=False,
                         help="The input data dir. Should contain the .tsv files (or other data files) for the task.")
     parser.add_argument('--output_dir', type=Path, default="output/")
+    parser.add_argument("--post_trained_checkpoint", default=None, type=str)
 
     # run config
     parser.add_argument("--max_seq_length", type=int, default=32, help="max lenght of token sequence")

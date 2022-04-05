@@ -19,7 +19,6 @@ def parse_args():
     parser.add_argument("--backbone_seq_length", type=int, default=32)
     parser.add_argument("--knowledge_seq_length", type=int, default=64)
     parser.add_argument("--max_num_entity", type=int, default=2)
-    # parser.add_argument("--neighbor_num", type=int, default=1)
 
     # model training
     parser.add_argument("--epochs", type=int, default=2)
@@ -38,8 +37,6 @@ def parse_args():
     parser.add_argument("--backbone_model_name_or_path", default="bert-base-uncased", type=str, )
     parser.add_argument("--knowledge_model_name_or_path", default="distilbert-base-uncased", type=str, )
     parser.add_argument("--post_trained_checkpoint", default=None, type=str)
-    # parser.add_argument("--config_name_k", default="", type=str, )
-    # parser.add_argument("--vocab_path_k", default="", type=str)
 
     parser.add_argument("--backbone_knowledge_dict", default={0: 0, 1: 0, 3: 1, 5: 2, 7: 3, 9: 4, 11: 5}, type=dict)
     # parser.add_argument("--backbone_knowledge_dict", default={0: 0, 2: 1, 4: 2, 6: 3, 8: 4, 10: 5}, type=dict)

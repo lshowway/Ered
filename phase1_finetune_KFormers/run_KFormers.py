@@ -338,7 +338,7 @@ def do_eval(model, args, val_dataset, global_step):
     eval_iterator = tqdm(val_dataloader, desc="Evaluating", disable=args.local_rank not in [-1, 0])
     for step, batch in enumerate(eval_iterator):
 
-        if step > 3:
+        if step > 5:
             break
 
         model.eval()
@@ -387,7 +387,7 @@ def do_eval(model, args, val_dataset, global_step):
                 preds = np.append(preds, logits.detach().cpu().numpy(), axis=0)
                 out_label_ids = np.append(out_label_ids, labels.detach().cpu().numpy(), axis=0)
 
-    if args.task_name in ['openentity',  'figer']:
+    if args.task_name in ['openentity',  'figer', 'sst2', 'eem']:
         pass
     elif args.task_name in ['tacred', 'fewrel']:
         preds = np.argmax(preds, axis=1)

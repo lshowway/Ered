@@ -49,12 +49,30 @@ def load_model(args):
     Kmodule_state_dict = model.state_dict()  # KFormers的全部参数
 
     # initialize with roberta
-    pretrained_state_dict = AutoModelForPreTraining.from_pretrained(args.model_name_or_path).state_dict()
+    if args.post_trained_checkpoint is not None:
+        pretrained_state_dict = AutoModelForPreTraining.from_pretrained(args.post_trained_checkpoint).state_dict()
+    else:
+        pretrained_state_dict = AutoModelForPreTraining.from_pretrained(args.model_name_or_path).state_dict()
     news_k_state_dict = OrderedDict()
     for key, value in pretrained_state_dict.items():
         if key in Kmodule_state_dict:
             news_k_state_dict[key] = value
+
     Kmodule_state_dict.update(news_k_state_dict)
+    # == 在这里设置backbone的参数更新情况 == 只更新前六层
+    for k, v in Kmodule_state_dict.items():
+        v.requires_grad = False
+        if 'roberta.encoder.layer.' in k:
+            t1 = k.split('roberta.encoder.layer.')[1]
+            t2 = t1.split('.')[0]
+            t = 'roberta.encoder.layer.' + t2
+            if t in ['roberta.encoder.layer.0', 'roberta.encoder.layer.1',
+                     'roberta.encoder.layer.2', 'roberta.encoder.layer.3',
+                     'roberta.encoder.layer.4', 'roberta.encoder.layer.5']:  # []表示参数更新的层
+                v.requires_grad = True
+        if 'entity_embeddings' in k:
+            v.requires_grad = True
+    # == 在这里设置backbone的参数更新情况 ==
     model.load_state_dict(state_dict=Kmodule_state_dict)
 
     return model
@@ -135,7 +153,7 @@ def do_train(args, model, train_dataset, val_dataset=None, test_dataset=None, en
         {'params': [p for n, p in param_optimizer if any(
             nd in n for nd in no_decay)], 'weight_decay': 0.0}
     ]
-    if args.max_steps > 0:
+    if args.max_steps > -1:
         t_total = args.max_steps
         args.num_train_epochs = args.max_steps // (len(train_dataloader)) + 1
     else:
@@ -166,13 +184,13 @@ def do_train(args, model, train_dataset, val_dataset=None, test_dataset=None, en
 
     # Train!
     logger.info("***** Running training *****")
-    logger.info("  Num examples = %d", len(train_dataloader) * args.total_batch_size)
+    logger.info("  Num examples = %d", len(train_dataloader) * args.total_batch_size * torch.distributed.get_world_size())
     logger.info("  Num Epochs = %d", args.num_train_epochs)
     logger.info("  Instantaneous batch size per GPU = %d", args.per_gpu_train_batch_size)
-    logger.info("  Number of GPU = %d", args.n_gpu)
+    logger.info("  Number of GPU = %d", torch.distributed.get_world_size())
     logger.info("  Gradient Accumulation steps = %d", args.gradient_accumulation_steps)
     logger.info("  Total train batch size (w. parallel, distributed & accumulation) = %d",
-                args.per_gpu_train_batch_size * args.gradient_accumulation_steps * args.n_gpu)
+                args.per_gpu_train_batch_size * args.gradient_accumulation_steps * torch.distributed.get_world_size())
     logger.info("  Total optimization steps = %d", t_total)
 
     global_step = 0
@@ -257,7 +275,7 @@ def do_train(args, model, train_dataset, val_dataset=None, test_dataset=None, en
                     os.makedirs(output_dir)
                 model_to_save = model.module if hasattr(model, 'module') else model  # Take care of distributed/parallel training
                 torch.save(model_to_save.state_dict(), os.path.join(output_dir, "pytorch_model.bin"))  # save checkpoint
-                torch.save(optimizer.state_dict(), os.path.join(output_dir, 'optimizer.bin'))  # save optimizer
+                # torch.save(optimizer.state_dict(), os.path.join(output_dir, 'optimizer.bin'))  # save optimizer
                 torch.save(scheduler.state_dict(), os.path.join(output_dir, 'scheduler.bin'))  # save scheduler
                 torch.save(args, os.path.join(output_dir, 'training_args.bin'))  # save arguments
                 torch.save(global_step, os.path.join(args.output_dir, 'global_step.bin'))
@@ -292,7 +310,7 @@ def do_train(args, model, train_dataset, val_dataset=None, test_dataset=None, en
                 os.makedirs(output_dir)
             model_to_save = model.module if hasattr(model, 'module') else model  # Take care of distributed/parallel training
             torch.save(model_to_save.state_dict(), os.path.join(output_dir, "pytorch_model.bin"))  # save checkpoint
-            torch.save(optimizer.state_dict(), os.path.join(output_dir, 'optimizer.bin'))  # save optimizer
+            # torch.save(optimizer.state_dict(), os.path.join(output_dir, 'optimizer.bin'))  # save optimizer, too large
             torch.save(scheduler.state_dict(), os.path.join(output_dir, 'scheduler.bin'))  # save scheduler
             torch.save(args, os.path.join(output_dir, 'training_args.bin'))  # save arguments
             torch.save(global_step, os.path.join(args.output_dir, 'global_step.bin'))

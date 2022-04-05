@@ -941,18 +941,15 @@ class TACREDProcessor(DataProcessor):
 class FewrelProcessor(DataProcessor):
 
     def get_train_examples(self, data_dir, dataset_type):
-        """See base class."""
         examples = self._create_examples(
             self._read_json(os.path.join(data_dir, "{}.json".format(dataset_type))), "train")
         return examples
 
     def get_dev_examples(self, data_dir, dataset_type):
-        """See base class."""
         return self._create_examples(
             self._read_json(os.path.join(data_dir, "{}.json".format(dataset_type))), "{}".format(dataset_type))
 
     def get_labels(self):
-        """Useless"""
         labels = ['P22', 'P449', 'P137', 'P57', 'P750', 'P102', 'P127', 'P1346', 'P410', 'P156', 'P26', 'P674', 'P306', 'P931',
          'P1435', 'P495', 'P460', 'P1411', 'P1001', 'P6', 'P413', 'P178', 'P118', 'P276', 'P361', 'P710', 'P155',
          'P740', 'P31', 'P1303', 'P136', 'P974', 'P407', 'P40', 'P39', 'P175', 'P463', 'P527', 'P17', 'P101', 'P800',
@@ -962,7 +959,6 @@ class FewrelProcessor(DataProcessor):
         return labels
 
     def _create_examples(self, lines, dataset_type):
-        """Creates examples for the training and dev sets."""
         examples = []
         label_list = self.get_labels()
         label_map = {label: i for i, label in enumerate(label_list)}

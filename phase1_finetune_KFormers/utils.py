@@ -399,7 +399,8 @@ def compute_metrics(task_name, preds, labels):
         return tacred_metric(preds, labels, NO_RELATION)
         # return fewrel_metric(preds, labels)
     elif task_name == 'fewrel':
-        return fewrel_metric(preds, labels)
+        # return fewrel_metric(preds, labels)
+        return tacred_metric(preds, labels, na_id=-1)
     else:
         raise KeyError(task_name)
 

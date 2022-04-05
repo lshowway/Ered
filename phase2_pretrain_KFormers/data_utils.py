@@ -18,7 +18,7 @@ def load_and_cache_examples(args, processor, tokenizer, dataset_type, evaluate=F
     if args.local_rank not in [-1, 0] and not evaluate:
         torch.distributed.barrier()  # Make sure only the first process in distributed training process the dataset, and the others will use the cache
     # Load data features from cache or dataset file
-    cached_features_file = os.path.join(args.data_dir, 'cached_pretrain_{}_{}_{}'.format(
+    cached_features_file = os.path.join(args.data_dir, 'cached_pretrain_300w_{}_{}_{}'.format(
         args.model_type,
         dataset_type,
         str(args.max_seq_length),
@@ -69,8 +69,10 @@ def convert_examples_to_features(examples, max_seq_length, tokenizer,):
         if ex_index % 10000 == 0:
             logger.info("Writing example %d of %d" % (ex_index, len(examples)))
 
-        if ex_index > 10000:
-            break
+        # if ex_index < 1000000: # 处理完的
+        #     continue
+        # elif ex_index > 3000000: # 处理1-3百万之间的
+        #     break
 
         qid, description_entity, description = x.qid, x.entity_name, x.description
         des_mentions_list = x.des_mentions
@@ -257,6 +259,8 @@ class EntityPredictionProcessor(DataProcessor):
         label_set = self.get_labels() # 4.94 million
 
         for (i, x) in enumerate(lines):
+            if i % 50000 == 0:
+                print('Processing  ', i)
             qid, entity_name, description, des_mentions_list = \
                 x['global_entity_name_qid'], x['global_entity_name'], x['abstract'], x['abstract_mentions']
 
