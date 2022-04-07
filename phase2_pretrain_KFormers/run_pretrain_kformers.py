@@ -66,9 +66,13 @@ def load_model(args):
             t1 = k.split('roberta.encoder.layer.')[1]
             t2 = t1.split('.')[0]
             t = 'roberta.encoder.layer.' + t2
-            if t in ['roberta.encoder.layer.0', 'roberta.encoder.layer.1',
-                     'roberta.encoder.layer.2', 'roberta.encoder.layer.3',
-                     'roberta.encoder.layer.4', 'roberta.encoder.layer.5']:  # []表示参数更新的层
+            # if t in ['roberta.encoder.layer.0', 'roberta.encoder.layer.1',
+            #          'roberta.encoder.layer.2', 'roberta.encoder.layer.3',
+            #          'roberta.encoder.layer.4', 'roberta.encoder.layer.5']:  # []表示参数更新的层
+            # if t in ['roberta.encoder.layer.5', 'roberta.encoder.layer.8',
+            #          'roberta.encoder.layer.11', 'roberta.encoder.layer.14',
+            #          'roberta.encoder.layer.17', 'roberta.encoder.layer.20']:  # []表示参数更新的层
+            if t in []: # 直接不更新
                 v.requires_grad = True
         if 'entity_embeddings' in k:
             v.requires_grad = True

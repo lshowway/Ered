@@ -69,7 +69,7 @@ class EntityPredictionProcessor():
             return data
 
     def get_train_examples(self, data_dir, local_rank, dataset_type=None):
-        write_dir = data_dir + '/CC_2'
+        write_dir = data_dir + '/CC'
         read_dir = data_dir + '/BB'
 
         if not os.path.exists(write_dir):
