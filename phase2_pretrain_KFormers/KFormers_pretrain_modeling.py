@@ -147,9 +147,7 @@ class PreTrainingHeads(nn.Module):
 
 
 class KModulePretrainingModel(nn.Module):
-    '''
-    RoBERTa Model with a `XXX` head on top
-    '''
+
     def __init__(self, config):
         super(KModulePretrainingModel, self).__init__()
         self.config = config
@@ -179,10 +177,10 @@ class KModulePretrainingModel(nn.Module):
         if isinstance(module, nn.Linear) and module.bias is not None:
             module.bias.data.zero_()
 
-    def forward(self, input_ids, input_mask, input_segment, mention_token_label,
-                mention_span_idx, mention_entity_candidates,
-                des_entity_candidates,
-                mention_entity_labels, des_entity_labels):
+    def forward(self, input_ids, input_mask=None, input_segment=None, mention_token_label=None,
+                mention_span_idx=None, mention_entity_candidates=None,
+                des_entity_candidates=None,
+                mention_entity_labels=None, des_entity_labels=None):
         """
         mention_span_idx: 也可以表达start，end这种两头的形式
         """

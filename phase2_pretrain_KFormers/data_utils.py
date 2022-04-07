@@ -6,6 +6,8 @@ import json
 import logging
 import os
 import torch
+from more_itertools import locate
+from collections import defaultdict
 from sklearn.metrics import precision_recall_curve, auc, roc_curve, accuracy_score
 from torch.utils.data import TensorDataset
 
@@ -18,7 +20,7 @@ def load_and_cache_examples(args, processor, tokenizer, dataset_type, evaluate=F
     if args.local_rank not in [-1, 0] and not evaluate:
         torch.distributed.barrier()  # Make sure only the first process in distributed training process the dataset, and the others will use the cache
     # Load data features from cache or dataset file
-    cached_features_file = os.path.join(args.data_dir, 'cached_pretrain_300w_{}_{}_{}'.format(
+    cached_features_file = os.path.join(args.data_dir, 'cached_wikipedia_{}_{}_{}'.format(
         args.model_type,
         dataset_type,
         str(args.max_seq_length),
@@ -28,22 +30,22 @@ def load_and_cache_examples(args, processor, tokenizer, dataset_type, evaluate=F
         features = torch.load(cached_features_file)
     else:
         logger.warning("===> Creating features from dataset file at {}, {}".format(str(args.data_dir), dataset_type))
-        label_list = processor.get_labels()
         if evaluate:
-            examples = processor.get_dev_examples(args.data_dir, dataset_type)
+            features = processor.get_dev_examples(args.data_dir+'/BB', dataset_type)
         else:
-            examples = processor.get_train_examples(args.data_dir, dataset_type)
+            features = processor.get_train_examples(args.data_dir+'/BB', dataset_type)
 
-        features =  convert_examples_to_features(examples, args.max_seq_length, tokenizer)
+        # features =  convert_examples_to_features(examples, args.max_seq_length, tokenizer)
         if args.local_rank in [-1, 0]:
-            torch.save(features, cached_features_file)
             logger.warning("===> Saving features into cached file %s", cached_features_file)
+            torch.save(features, cached_features_file)
+            logger.warning("===> Saved features into cached file %s", cached_features_file)
 
     if args.local_rank == 0 and not evaluate:
         torch.distributed.barrier()  # Make sure only the first process in distributed training process the dataset, and the others will use the cache
 
     input_ids = torch.tensor([f.input_ids for f in features], dtype=torch.long)
-    input_mask = torch.tensor([f.input_mask for f in features], dtype=torch.long)
+    # input_mask = torch.tensor([f.input_mask for f in features], dtype=torch.long)
     # segment_ids = torch.tensor([f.segment_ids for f in features], dtype=torch.long)
     mlm_labels = torch.tensor([f.mlm_labels for f in features], dtype=torch.long)
 
@@ -51,146 +53,29 @@ def load_and_cache_examples(args, processor, tokenizer, dataset_type, evaluate=F
     mention_entity = torch.tensor([f.mention_entity for f in features], dtype=torch.long)
     description_entity = torch.tensor([f.description_entity for f in features], dtype=torch.long)
 
-
-    # dataset = TensorDataset(input_ids, input_mask, segment_ids, mlm_labels,
-    #                         mention_span, mention_entity, description_entity)
-
-    dataset = TensorDataset(input_ids, input_mask, mlm_labels,
+    dataset = TensorDataset(input_ids, mlm_labels,
                             mention_span, mention_entity, description_entity)
 
     return dataset
 
 
 
-def convert_examples_to_features(examples, max_seq_length, tokenizer,):
-    features = []
-
-    for (ex_index, x) in enumerate(examples):
-        if ex_index % 10000 == 0:
-            logger.info("Writing example %d of %d" % (ex_index, len(examples)))
-
-        # if ex_index < 1000000: # 处理完的
-        #     continue
-        # elif ex_index > 3000000: # 处理1-3百万之间的
-        #     break
-
-        qid, description_entity, description = x.qid, x.entity_name, x.description
-        des_mentions_list = x.des_mentions
-
-        # t = {"mention": mention, "mention_entity": mention_entity, "mention_span": mention_span,
-        #      "mention_entity_qid": mention_entity_qid}
-        for y in des_mentions_list:
-            mention = y['mention']
-            mention_entity = y['mention_entity']
-            # mention_qid = y['mention_entity_qid']  # 有NO_QID
-            start, end = y['mention_span']
-            # text
-            before_mention = description[: start]
-            this_mention = description[start: end]
-            assert this_mention == mention
-            after_mention = description[end:]
-            # ------
-            tokens = [tokenizer.cls_token]
-
-            tokens += tokenizer.tokenize(before_mention)
-            new_start = len(tokens)
-
-            tokens += ['@'] # ['SOM']不另设特殊符号，因为需要扩vocab 155
-            mention_tokens = tokenizer.tokenize(this_mention)
-            tokens += [tokenizer.mask_token] * len(mention_tokens)
-            new_end = len(tokens) # 158
-            tokens += ['@'] # ['EOM']
-
-            tokens += tokenizer.tokenize(after_mention)
-
-            tokens += [tokenizer.eos_token] # 可能超过，可能不足
-            # ========
-            input_ids = tokenizer.convert_tokens_to_ids(tokens)
-            mention_tokens_ids = tokenizer.convert_tokens_to_ids(mention_tokens)
-            input_mask = [1] * len(input_ids)
-            segment_ids = [0] * len(input_ids)
-
-            # 还可以是
-            # span_id[new_start: new_end+1] = 1  # 中间token也使用
-            # === cut
-            input_ids = input_ids[: max_seq_length]
-            input_mask = input_mask[: max_seq_length]
-            segment_ids = segment_ids[: max_seq_length]
-            # mlm_labels = mlm_labels[: max_seq_length]
-            # span_id = span_id[: max_seq_length]
-            # ==
-            # Zero-pad up to the sequence length.
-            padding_length = max_seq_length - len(input_ids)
-            input_ids += [tokenizer.pad_token_id] * padding_length
-            input_mask += [0] * padding_length
-            # roberta只有一种token type embedding
-            segment_ids += [tokenizer.pad_token_type_id] * padding_length
-            # mlm_labels += [-1] * padding_length
-            # span_id += [0] * padding_length
-            # ===
-            # 如果mention被cut了
-            span_id = np.zeros(len(input_ids))
-            mlm_labels = [-1] * max_seq_length  # pad之后的
-
-            if new_start >= max_seq_length:
-                # new_start = new_end = 0
-                span_id[0] = 1
-                mlm_labels[0] = mention_tokens_ids[0]  # 不包括@@符号
-            elif new_end >= max_seq_length:
-                new_end = -1  # 如果后面超了，就用最后一个
-                span_id[new_start] = 1
-                span_id[-1] = 1
-
-                mlm_labels[new_start + 1: max_seq_length] = mention_tokens_ids[: max_seq_length - new_start - 1]  # 不包括@@符号
-            else:
-                span_id[new_start] = 1
-                span_id[new_end] = 1
-                mlm_labels[new_start+1: new_end] = mention_tokens_ids
-
-            if sum(mlm_labels) == 0 or sum(span_id) == 0:
-                print(new_start, new_end)
-
-
-                # print(len(mlm_labels[new_start + 1: max_seq_length]), len(mention_tokens_ids[: max_seq_length - new_start - 1]))
-            # print(len(mlm_labels))
-
-            assert len(input_ids) == max_seq_length
-            assert len(input_mask) == max_seq_length
-            assert len(segment_ids) == max_seq_length
-            assert len(mlm_labels) == max_seq_length
-            assert len(span_id) == max_seq_length
-
-            features.append(
-                InputFeatures(input_ids=input_ids,
-                              input_mask=input_mask,
-                              segment_ids=segment_ids,
-                              mlm_labels=mlm_labels,
-                              mention_span = span_id,
-                              mention_entity=mention_entity, # 这需要转换成idx表示的
-                              description_entity=description_entity, # # 这需要转换成idx表示的
-                              # entity_labels=None
-                              ))
-
-    return features
-
-
-
-class InputExample(object):
-    def __init__(self, guid, qid, entity_name=None, description=None, des_mentions=None):
-        self.guid = guid
-        self.qid = qid
-        self.entity_name = entity_name
-        self.description = description
-        self.des_mentions = des_mentions
+# class InputExample(object):
+#     def __init__(self, guid, qid, entity_name=None, description=None, des_mentions=None):
+#         self.guid = guid
+#         self.qid = qid
+#         self.entity_name = entity_name
+#         self.description = description
+#         self.des_mentions = des_mentions
 
 
 
 class InputFeatures(object):
-    def __init__(self, input_ids=None, input_mask=None, segment_ids=None, mlm_labels=None,
-                 mention_span=None, mention_entity=None, description_entity=None, entity_labels=None,):
+    def __init__(self, input_ids=None, mlm_labels=None,
+                 mention_span=None, mention_entity=None, description_entity=None,):
         self.input_ids = input_ids
-        self.input_mask = input_mask
-        self.segment_ids = segment_ids
+        # self.input_mask = input_mask
+        # self.segment_ids = segment_ids
         self.mlm_labels = mlm_labels
 
         self.mention_span = mention_span
@@ -233,47 +118,144 @@ class DataProcessor(object):
 
 
 class EntityPredictionProcessor(DataProcessor):
-    def __init__(self, data_dir=None, entity_vocab_file=None):
-        self.entity_vocab_file = entity_vocab_file
+    def __init__(self, data_dir=None, tokenizer=None, max_seq_length=None):
+        self.tokenizer = tokenizer
         self.data_dir = data_dir
+        self.max_seq_length = max_seq_length
 
     def get_train_examples(self, data_dir, dataset_type=None):
-        lines = self._read_json(os.path.join(data_dir, "our_dbpedia_abstract_corpus_v4.json"))
-        return self._create_examples(lines)
 
-    def get_dev_examples(self, data_dir, dataset_type=None):
-        lines = self._read_json(os.path.join(data_dir, "our_dbpedia_abstract_corpus_v4_dev.json".format(dataset_type)))
-        return self._create_examples(lines)
+        files = os.listdir(data_dir)
+        all_lines = []
+        t = self.get_labels()
+        label_set = dict(zip(t, list(range(len(t))))) # 1.3m
 
-    def get_labels(self):
-        entity_vocab = []
-        with open(self.entity_vocab_file, encoding='utf-8') as fr:
-            for line in fr:
-                title, qid = line.strip('\n').split('\t')
-                entity_vocab.append(title)
-        entity_vocab = dict(zip(entity_vocab, range(len(entity_vocab))))
-        return entity_vocab
+        for file in files:
+            print(file)
+            lines = self._read_json(os.path.join(data_dir, file))
+            all_lines.extend(lines)
+        examples =  self._create_examples(all_lines, label_set=label_set)
 
-    def _create_examples(self, lines):
-        examples = []
-        label_set = self.get_labels() # 4.94 million
-
-        for (i, x) in enumerate(lines):
-            if i % 50000 == 0:
-                print('Processing  ', i)
-            qid, entity_name, description, des_mentions_list = \
-                x['global_entity_name_qid'], x['global_entity_name'], x['abstract'], x['abstract_mentions']
-
-            # des_mentions = {"mention": mention, "mention_entity": mention_entity, "mention_span": mention_span,
-            #      "mention_entity_qid": mention_entity_qid}
-            new_de_mentions_list = []
-            for des_mentions in des_mentions_list:
-                entity_name = label_set[entity_name] # 不可以报错
-                t = des_mentions['mention_entity']
-                des_mentions['mention_entity'] = label_set[t]  # 这儿为什么会报错？mention_entity不是根据vocab过滤，或者vocab是根据entity生成的呀？
-                new_de_mentions_list.append(des_mentions)
-            examples.append(
-                InputExample(guid=i, qid=qid, entity_name=entity_name, description=description, des_mentions=new_de_mentions_list))
-
+        print('[total] number of pre-training samples: ', len(examples))
 
         return examples
+
+
+    def get_labels(self):
+        if os.path.exists(os.path.join(self.data_dir, 'entity_vocab.tsv')):
+            entity_list = []
+            with open(os.path.join(self.data_dir, 'entity_vocab.tsv'), encoding='utf-8') as f:
+                for line in f:
+                    entity = line.strip('\n')
+                    entity_list.append(entity)
+        else:
+            entity_count_dict = defaultdict(int)
+            files = os.listdir(self.data_dir+'/BB')
+            # all_lines = []
+            for file in files:
+                print(file)
+                lines = self._read_json(os.path.join(self.data_dir+'/BB', file))
+                # all_lines.extend(lines)
+                for x in lines:
+                    title, annotation = x['title'], x['annotation']
+                    entity_count_dict[title] += 1
+                    for anchor, entity in annotation.items():
+                        entity_count_dict[entity] += 1
+
+            entity_list = []
+            for entity, entity_count in entity_count_dict.items():
+                if 10 <= entity_count <= 5000 and len(entity.split('_')) < 6:
+                    entity_list.append(entity)
+
+            with open(os.path.join(self.data_dir, 'entity_vocab.tsv'), 'w', encoding='utf-8') as fw:
+                logger.info("Writing entity vocabulary into: %s".format(self.data_dir + 'entity_vocab.tsv'))
+                for e in entity_list:
+                    fw.write(e + '\n')
+
+        print('The total number of entity vocabulary is: ', len(entity_list))
+        logger.info('The total number of entity vocabulary is: {}'.format(len(entity_list)))
+        return entity_list
+
+    def _create_examples(self, lines, label_set):
+        features = []
+        remove_count = 0
+        filtered_anchor = 0
+        for (i, x) in enumerate(lines):
+            if i % 100000 == 0:
+                print('[total wikipedia papges] Processing  features: ', i)
+
+            # if i > 1000:
+            #     break
+
+            title, text, annotation = x['title'], x['text'], x['annotation']
+            if title in label_set:
+                title_id = label_set[title]  # 不可以报错
+            else:
+                continue  # only about 1.3 million entities are considered
+            tokens = self.tokenizer.tokenize(text)
+            token_ids = self.tokenizer.convert_tokens_to_ids(tokens)
+
+            start_indexes = list(locate(tokens, lambda x: x == '<s>'))
+            end_indexes = list(locate(tokens, lambda x: x == '</s>'))  # 这儿确实有bug，因为document中很大概率有@符号，改成<s></s>符号
+            if len(start_indexes) != len(end_indexes): # 这些就直接扔掉了
+                remove_count += 1
+                continue
+            for start, end in zip(start_indexes, end_indexes):
+                anchor_len = end - start
+                l_len = (self.max_seq_length - anchor_len - 1) // 2 # 包括@
+
+                input_ids = [self.tokenizer.cls_token_id] + token_ids[start - l_len: start]
+                inputs = [self.tokenizer.cls_token] + tokens[start - l_len: start]
+
+                span_id = np.zeros(self.max_seq_length)
+                new_start = len(inputs)
+                span_id[new_start] = 1
+
+                input_ids += token_ids[start: end]
+                inputs += tokens[start: end]
+
+                new_end = len(inputs)
+                if new_end >= self.max_seq_length:
+                    filtered_anchor += 1
+                    continue
+                span_id[new_end] = 1
+
+                input_ids += token_ids[end: self.max_seq_length - 1] # 减去cls
+                inputs += tokens[end: self.max_seq_length - 1]
+                # pad,还加attn_mask嘛
+                # if len(input_ids) < self.max_seq_length:
+                #     is_mask += 1
+                input_ids = input_ids + ([self.tokenizer.pad_token_id] * (self.max_seq_length - len(input_ids)))
+
+                mlm_labels = [-1] * self.max_seq_length
+                mlm_labels[new_start+1: new_end] = token_ids[start+1: end]
+
+                anchor = self.tokenizer.convert_tokens_to_string(tokens[start+1: end])
+                # print(start, end, new_start, new_end, inputs)
+                # print(anchor)
+                # print(annotation)
+                if anchor in annotation:
+                    entity = annotation[anchor]
+                    if entity in label_set:
+                        anchor_label = label_set[entity] # linked entity
+                    else:
+                        continue
+                else:
+                    filtered_anchor += 1
+                    continue
+
+                # print(len(input_ids), len(mlm_labels), len(span_id))
+                assert len(input_ids) == self.max_seq_length
+                assert len(mlm_labels) == self.max_seq_length
+                assert len(span_id) == self.max_seq_length
+
+                features.append(InputFeatures(input_ids=input_ids,
+                              mlm_labels=mlm_labels,
+                              mention_span=span_id,
+                              mention_entity=anchor_label,  # 这需要转换成idx表示的
+                              description_entity=title_id,  # # 这需要转换成idx表示的
+                              ))
+        # print('removed counts: ', remove_count)
+        # print('filtered anchor: ', filtered_anchor)
+        print('the total number of pre-training samples of this file: ', len(features))
+        return features
