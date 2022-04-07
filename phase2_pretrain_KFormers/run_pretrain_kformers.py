@@ -395,8 +395,9 @@ def main():
 
     # Training
     if args.do_train:
-        train_dataset = load_and_cache_examples(args, processor, tokenizer, 'train', evaluate=False)
+        train_dataset = load_and_cache_examples(args, processor, 'train', evaluate=False)
         # val_dataset = load_and_cache_examples(args, processor, tokenizer, 'dev', evaluate=True)
+
 
         do_train(args, model, train_dataset, val_dataset=None, test_dataset=None, entity_set=entity_set)
 

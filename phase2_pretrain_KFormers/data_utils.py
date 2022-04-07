@@ -15,31 +15,12 @@ logger = logging.getLogger(__name__)
 
 
 
-def load_and_cache_examples(args, processor, tokenizer, dataset_type, evaluate=False):
+def load_and_cache_examples(args, processor, dataset_type, evaluate=False):
     # dataset_type: train, dev, test
     if args.local_rank not in [-1, 0] and not evaluate:
         torch.distributed.barrier()  # Make sure only the first process in distributed training process the dataset, and the others will use the cache
-    # Load data features from cache or dataset file
-    cached_features_file = os.path.join(args.data_dir, 'cached_wikipedia_{}_{}_{}'.format(
-        args.model_type,
-        dataset_type,
-        str(args.max_seq_length),
-        ))
-    if os.path.exists(cached_features_file):
-        logger.warning("===> Loading features from cached file %s", cached_features_file)
-        features = torch.load(cached_features_file)
-    else:
-        logger.warning("===> Creating features from dataset file at {}, {}".format(str(args.data_dir), dataset_type))
-        if evaluate:
-            features = processor.get_dev_examples(args.data_dir+'/BB', dataset_type)
-        else:
-            features = processor.get_train_examples(args.data_dir+'/BB', dataset_type)
 
-        # features =  convert_examples_to_features(examples, args.max_seq_length, tokenizer)
-        if args.local_rank in [-1, 0]:
-            logger.warning("===> Saving features into cached file %s", cached_features_file)
-            torch.save(features, cached_features_file)
-            logger.warning("===> Saved features into cached file %s", cached_features_file)
+    features = processor.get_train_examples(args.data_dir, args.local_rank, dataset_type)
 
     if args.local_rank == 0 and not evaluate:
         torch.distributed.barrier()  # Make sure only the first process in distributed training process the dataset, and the others will use the cache
@@ -60,16 +41,6 @@ def load_and_cache_examples(args, processor, tokenizer, dataset_type, evaluate=F
 
 
 
-# class InputExample(object):
-#     def __init__(self, guid, qid, entity_name=None, description=None, des_mentions=None):
-#         self.guid = guid
-#         self.qid = qid
-#         self.entity_name = entity_name
-#         self.description = description
-#         self.des_mentions = des_mentions
-
-
-
 class InputFeatures(object):
     def __init__(self, input_ids=None, mlm_labels=None,
                  mention_span=None, mention_entity=None, description_entity=None,):
@@ -86,59 +57,44 @@ class InputFeatures(object):
 
 
 
-class DataProcessor(object):
-    """Base class for data converters for sequence classification data sets."""
-
-    def get_train_examples(self, data_dir):
-        """Gets a collection of `InputExample`s for the train set."""
-        raise NotImplementedError()
-
-    def get_dev_examples(self, data_dir):
-        """Gets a collection of `InputExample`s for the dev set."""
-        raise NotImplementedError()
-
-    def get_labels(self, ):
-        """Gets the list of labels for this data set."""
-        raise NotImplementedError()
-
-    @classmethod
-    def _read_tsv(cls, input_file, quotechar=None):
-        with open(input_file, "r", encoding="utf-8-sig") as f:
-            reader = csv.reader(f, delimiter="\t", quotechar=quotechar)
-            lines = []
-            for line in reader:
-                lines.append(line)
-            return lines
+class EntityPredictionProcessor():
+    def __init__(self, data_dir=None, tokenizer=None, max_seq_length=None):
+        self.tokenizer = tokenizer
+        self.data_dir = data_dir
+        self.max_seq_length = max_seq_length
 
     def _read_json(cls, input_file):
         with open(input_file, 'r', encoding='utf8') as f:
             data = [json.loads(line) for line in f]
             return data
 
+    def get_train_examples(self, data_dir, local_rank, dataset_type=None):
+        write_dir = data_dir + '/CC_2'
+        read_dir = data_dir + '/BB'
 
+        if not os.path.exists(write_dir):
+            os.makedirs(write_dir)
 
-class EntityPredictionProcessor(DataProcessor):
-    def __init__(self, data_dir=None, tokenizer=None, max_seq_length=None):
-        self.tokenizer = tokenizer
-        self.data_dir = data_dir
-        self.max_seq_length = max_seq_length
-
-    def get_train_examples(self, data_dir, dataset_type=None):
-
-        files = os.listdir(data_dir)
-        all_lines = []
+        # load
         t = self.get_labels()
         label_set = dict(zip(t, list(range(len(t))))) # 1.3m
 
+        all_lines = []
+        files = os.listdir(read_dir)
         for file in files:
             print(file)
-            lines = self._read_json(os.path.join(data_dir, file))
-            all_lines.extend(lines)
-        examples =  self._create_examples(all_lines, label_set=label_set)
+            if os.path.exists(os.path.join(write_dir, 'cached_'+file)):
+                features = torch.load(os.path.join(write_dir, 'cached_' + file))
+            else:
+                lines = self._read_json(os.path.join(read_dir, file))
+                features =  self._create_examples(lines, label_set=label_set)
+                if local_rank in [-1, 0]:
+                    torch.save(features, os.path.join(write_dir, 'cached_'+file))
+            all_lines.extend(features)
 
-        print('[total] number of pre-training samples: ', len(examples))
+        print('[total] number of pre-training samples: ', len(all_lines))
 
-        return examples
+        return all_lines
 
 
     def get_labels(self):
@@ -181,10 +137,10 @@ class EntityPredictionProcessor(DataProcessor):
         remove_count = 0
         filtered_anchor = 0
         for (i, x) in enumerate(lines):
-            if i % 100000 == 0:
+            if i % 10000 == 0:
                 print('[total wikipedia papges] Processing  features: ', i)
 
-            # if i > 1000:
+            # if i > 100:
             #     break
 
             title, text, annotation = x['title'], x['text'], x['annotation']
@@ -220,20 +176,18 @@ class EntityPredictionProcessor(DataProcessor):
                     continue
                 span_id[new_end] = 1
 
-                input_ids += token_ids[end: self.max_seq_length - 1] # 减去cls
-                inputs += tokens[end: self.max_seq_length - 1]
+                input_ids += token_ids[end: end + self.max_seq_length - len(input_ids)] # 减去cls
+                inputs += tokens[end: end + self.max_seq_length - len(inputs)]
+
                 # pad,还加attn_mask嘛
-                # if len(input_ids) < self.max_seq_length:
-                #     is_mask += 1
                 input_ids = input_ids + ([self.tokenizer.pad_token_id] * (self.max_seq_length - len(input_ids)))
 
                 mlm_labels = [-1] * self.max_seq_length
-                mlm_labels[new_start+1: new_end] = token_ids[start+1: end]
+                mask_list = [self.tokenizer.mask_token_id] * self.max_seq_length
+                mlm_labels[new_start+1: new_end] = token_ids[start+1: end]  # mlm的标签
+                input_ids[new_start+1: new_end] = mask_list[new_start+1: new_end]
 
                 anchor = self.tokenizer.convert_tokens_to_string(tokens[start+1: end])
-                # print(start, end, new_start, new_end, inputs)
-                # print(anchor)
-                # print(annotation)
                 if anchor in annotation:
                     entity = annotation[anchor]
                     if entity in label_set:
@@ -244,7 +198,6 @@ class EntityPredictionProcessor(DataProcessor):
                     filtered_anchor += 1
                     continue
 
-                # print(len(input_ids), len(mlm_labels), len(span_id))
                 assert len(input_ids) == self.max_seq_length
                 assert len(mlm_labels) == self.max_seq_length
                 assert len(span_id) == self.max_seq_length
@@ -255,7 +208,5 @@ class EntityPredictionProcessor(DataProcessor):
                               mention_entity=anchor_label,  # 这需要转换成idx表示的
                               description_entity=title_id,  # # 这需要转换成idx表示的
                               ))
-        # print('removed counts: ', remove_count)
-        # print('filtered anchor: ', filtered_anchor)
         print('the total number of pre-training samples of this file: ', len(features))
         return features

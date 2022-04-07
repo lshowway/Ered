@@ -7,22 +7,6 @@ from transformers.models.roberta.modeling_roberta import RobertaModel
 from transformers.models.bert.modeling_bert import BertForMaskedLM
 
 
-# def create_position_ids_from_input_ids(input_ids, padding_idx):
-#     """
-#     Replace non-padding symbols with their position numbers. Position numbers begin at padding_idx+1. Padding symbols
-#     are ignored. This is modified from fairseq's `utils.make_positions`.
-#
-#     Args:
-#         x: torch.Tensor x:
-#
-#     Returns: torch.Tensor
-#     """
-#     # The series of casts and type-conversions here are carefully balanced to both work with ONNX export and XLA.
-#     mask = input_ids.ne(padding_idx).int()
-#     incremental_indices = torch.cumsum(mask, dim=1).type_as(mask) * mask
-#     return incremental_indices.long() + padding_idx
-
-
 
 class EntityEmbeddings(nn.Module):
     def __init__(self, config):
@@ -190,7 +174,6 @@ class KModulePretrainingModel(nn.Module):
         cls_output = main_output.pooler_output # batch, 768
 
         mention_output = torch.bmm(mention_span_idx.unsqueeze(1), token_output).squeeze(1) # batch 1 L * batch L d = batch d
-        # mention_output = torch.mean(mention_output, dim=1, keepdim=False)
         t1 = self.entity_embeddings(mention_entity_candidates)
 
         # 第三个损失，对比损失，description=>entity
@@ -201,19 +184,14 @@ class KModulePretrainingModel(nn.Module):
                                                        cls_output, t2)
 
         # 第一个损失，交叉熵损失，类似于MLM
-        # main_logits = self.classifier(main_output.last_hidden_state)
         mlm_loss = self.cross_entropy_loss(mlm_logits.view(-1, self.vocab_size), mention_token_label.view(-1))
 
         # 第二个loss，对比损失，mention=>entity
 
-        # m2e_logits = torch.matmul(t1, mention_output).squeeze(-1) # batch N+1
         m2e_loss = self.binary_CE_loss(m2e_logits.view(-1, 2), mention_entity_labels.view(-1, 2))
         # m2e_loss = self.cross_entropy_loss(m2e_logits.view(-1, input_ids.size(0)), mention_entity_labels.view(-1))
 
         # 第三个损失，对比损失，description=>entity
-        # pooler_output = main_output.pooler_output  # batch, 768
-        # t2 = self.entity_embeddings(des_entity_candidates)
-        # d2e_logits = torch.matmul(t2, pooler_output.unsqueeze(1).permute(0, 2, 1)).squeeze(-1)  # batch N+1
         d2e_loss = self.binary_CE_loss(d2e_logits.view(-1, 2), des_entity_labels.view(-1, 2))
         # d2e_loss = self.cross_entropy_loss(d2e_logits.view(-1, input_ids.size(0)), des_entity_labels.view(-1))
 
