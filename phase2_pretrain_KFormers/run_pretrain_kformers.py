@@ -39,6 +39,7 @@ logger = logging.getLogger(__name__)
 
 
 def load_model(args):
+    logging.info("Loading Model..")
     config = AutoConfig.from_pretrained(args.model_name_or_path)
     # add K config
     config.entity_vocab_size = args.entity_vocab_size
@@ -66,13 +67,13 @@ def load_model(args):
             t1 = k.split('roberta.encoder.layer.')[1]
             t2 = t1.split('.')[0]
             t = 'roberta.encoder.layer.' + t2
-            # if t in ['roberta.encoder.layer.0', 'roberta.encoder.layer.1',
-            #          'roberta.encoder.layer.2', 'roberta.encoder.layer.3',
-            #          'roberta.encoder.layer.4', 'roberta.encoder.layer.5']:  # []表示参数更新的层
+            if t in ['roberta.encoder.layer.0', 'roberta.encoder.layer.1',
+                     'roberta.encoder.layer.2', 'roberta.encoder.layer.3',
+                     'roberta.encoder.layer.4', 'roberta.encoder.layer.5']:  # []表示参数更新的层
             # if t in ['roberta.encoder.layer.5', 'roberta.encoder.layer.8',
             #          'roberta.encoder.layer.11', 'roberta.encoder.layer.14',
             #          'roberta.encoder.layer.17', 'roberta.encoder.layer.20']:  # []表示参数更新的层
-            if t in []: # 直接不更新
+            # if t in []: # 直接不更新
                 v.requires_grad = True
         if 'entity_embeddings' in k:
             v.requires_grad = True
@@ -147,7 +148,7 @@ def do_train(args, model, train_dataset, val_dataset=None, test_dataset=None, en
         print('random ~~~~')
     else:
         train_sampler = DistributedSampler(train_dataset)
-    train_dataloader = DataLoader(train_dataset, sampler=train_sampler, batch_size=args.total_batch_size, drop_last=True, pin_memory=True, num_workers=0)
+    train_dataloader = DataLoader(train_dataset, sampler=train_sampler, batch_size=args.total_batch_size, drop_last=True, pin_memory=True)
 
     param_optimizer = list(model.named_parameters())
     no_decay = ['bias', 'LayerNorm.bias', 'LayerNorm.weight']
@@ -162,8 +163,8 @@ def do_train(args, model, train_dataset, val_dataset=None, test_dataset=None, en
         args.num_train_epochs = args.max_steps // (len(train_dataloader)) + 1
     else:
         t_total = len(train_dataloader) // args.gradient_accumulation_steps * args.num_train_epochs
-    if args.local_rank != -1:
-        t_total = t_total // torch.distributed.get_world_size()
+    # if args.local_rank != -1:
+    #     t_total = t_total // torch.distributed.get_world_size()
     if args.warmup_steps > -1:
         warmup_steps = args.warmup_steps
     else:
@@ -215,8 +216,9 @@ def do_train(args, model, train_dataset, val_dataset=None, test_dataset=None, en
 
     for epoch in train_iterator:
         if epoch > 0:
-            train_sampler = RandomSampler(train_dataset) if args.local_rank == -1 else DistributedSampler(train_dataset)
-            train_dataloader = DataLoader(train_dataset, sampler=train_sampler, batch_size=args.total_batch_size, drop_last=True, pin_memory=True, num_workers=0)
+            # train_sampler = RandomSampler(train_dataset) if args.local_rank == -1 else DistributedSampler(train_dataset)
+            # train_dataloader = DataLoader(train_dataset, sampler=train_sampler, batch_size=args.total_batch_size, drop_last=True, pin_memory=True)
+            train_dataloader.sampler.set_epoch(epoch)
         epoch_iterator = tqdm(train_dataloader, desc="Training", disable=args.local_rank not in [-1, 0])
         for step, batch in enumerate(epoch_iterator):
             model.train()
@@ -274,6 +276,7 @@ def do_train(args, model, train_dataset, val_dataset=None, test_dataset=None, en
             #         # print('epoch: {}, global step: {}, dev results: {}'.format(epoch, global_step, eval_results))
             if args.local_rank in [-1, 0] and args.save_steps > 0 and global_step > 0 and global_step % args.save_steps == 0:
                 # Save model checkpoint
+                logging.info('Saving checkpoint...')
                 output_dir = os.path.join(args.output_dir, 'checkpoint-{}'.format(global_step))
                 if not os.path.exists(output_dir):
                     os.makedirs(output_dir)
@@ -290,7 +293,7 @@ def do_train(args, model, train_dataset, val_dataset=None, test_dataset=None, en
                         shutil.rmtree(os.path.join(args.output_dir, 'checkpoint-{}'.format(
                             global_step - args.max_save_checkpoints * args.save_steps)))
                     except OSError as e:
-                        print(e)
+                        logging.error(e)
             if 0 < args.max_steps < global_step:
                 epoch_iterator.close()
                 break
@@ -325,7 +328,7 @@ def do_train(args, model, train_dataset, val_dataset=None, test_dataset=None, en
                     shutil.rmtree(os.path.join(args.output_dir, 'checkpoint-{}'.format(
                         global_step - args.max_save_checkpoints * args.save_steps)))
                 except OSError as e:
-                    print(e)
+                    logging.error(e)
         # end all epoches
         if 0 < args.max_steps < global_step:
             train_iterator.close()
@@ -342,7 +345,7 @@ def main():
     if args.server_ip and args.server_port:
         # Distant debugging - see https://code.visualstudio.com/docs/python/debugging#_attach-to-a-local-script
         import ptvsd
-        print("Waiting for debugger attach")
+        logging.warning("Waiting for debugger attach")
         ptvsd.enable_attach(address=(args.server_ip, args.server_port), redirect_output=True)
         ptvsd.wait_for_attach()
 
@@ -368,6 +371,7 @@ def main():
     set_seed(args)
 
     # Load pretrained model and tokenizer
+    print('00', args.local_rank) # 0 1 2 3
     if args.local_rank not in [-1, 0]:
         torch.distributed.barrier()  # Make sure only the first process in distributed training will download model & vocab
 
@@ -390,16 +394,21 @@ def main():
     args.entity_vocab_size = len(entity_set)
 
     model = load_model(args)
+    print('22', args.local_rank) # 0
     if args.local_rank == 0:
         torch.distributed.barrier()  # Make sure only the first process in distributed training will download model & vocab
 
     # model.to(args.device)
     model.to(args.device)
     logger.info("Training/evaluation parameters %s", args)
-
+    print('33', args.local_rank)  # 0
     # Training
     if args.do_train:
-        train_dataset = load_and_cache_examples(args, processor, 'train', evaluate=False)
+        start, end = 0, 30
+        # start, end = 30, 60
+        # start, end = 60, 90
+        # start, end = 90, 100
+        train_dataset = load_and_cache_examples(args, processor, 'train', evaluate=False, start=start, end=end)
         # val_dataset = load_and_cache_examples(args, processor, tokenizer, 'dev', evaluate=True)
 
 

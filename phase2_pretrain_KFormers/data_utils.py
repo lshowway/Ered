@@ -10,21 +10,25 @@ from more_itertools import locate
 from collections import defaultdict
 from sklearn.metrics import precision_recall_curve, auc, roc_curve, accuracy_score
 from torch.utils.data import TensorDataset
+from datetime import timedelta
 
 logger = logging.getLogger(__name__)
 
 
 
-def load_and_cache_examples(args, processor, dataset_type, evaluate=False):
+def load_and_cache_examples(args, processor, dataset_type, evaluate=False, start=0, end=-1):
+
     # dataset_type: train, dev, test
-    if args.local_rank not in [-1, 0] and not evaluate:
+    if args.local_rank not in [-1, 0]:
         torch.distributed.barrier()  # Make sure only the first process in distributed training process the dataset, and the others will use the cache
 
-    features = processor.get_train_examples(args.data_dir, args.local_rank, dataset_type)
+    features = processor.get_train_examples(args.data_dir, args.local_rank, dataset_type, start=start, end=end)
+    if args.local_rank == 0:
+        torch.distributed.barrier()
+    # if args.local_rank == 0 and not evaluate:
+    #     torch.distributed.monitored_barrier(timeout=timedelta(hours=8))  # Make sure only the first process in distributed training process the dataset, and the others will use the cache
 
-    if args.local_rank == 0 and not evaluate:
-        torch.distributed.barrier()  # Make sure only the first process in distributed training process the dataset, and the others will use the cache
-
+    # print('99, {}'.format(args.local_rank)) # 0 1 2 3
     input_ids = torch.tensor([f.input_ids for f in features], dtype=torch.long)
     # input_mask = torch.tensor([f.input_mask for f in features], dtype=torch.long)
     # segment_ids = torch.tensor([f.segment_ids for f in features], dtype=torch.long)
@@ -68,31 +72,22 @@ class EntityPredictionProcessor():
             data = [json.loads(line) for line in f]
             return data
 
-    def get_train_examples(self, data_dir, local_rank, dataset_type=None):
-        write_dir = data_dir + '/CC'
-        read_dir = data_dir + '/BB'
+    def get_train_examples(self, data_dir, local_rank, dataset_type=None, start=0, end=-1):
 
-        if not os.path.exists(write_dir):
-            os.makedirs(write_dir)
+        read_dir = data_dir + '/DD'
 
         # load
-        t = self.get_labels()
-        label_set = dict(zip(t, list(range(len(t))))) # 1.3m
-
         all_lines = []
+
         files = os.listdir(read_dir)
-        for file in files:
-            print(file)
-            if os.path.exists(os.path.join(write_dir, 'cached_'+file)):
-                features = torch.load(os.path.join(write_dir, 'cached_' + file))
-            else:
-                lines = self._read_json(os.path.join(read_dir, file))
-                features =  self._create_examples(lines, label_set=label_set)
-                if local_rank in [-1, 0]:
-                    torch.save(features, os.path.join(write_dir, 'cached_'+file))
+
+        for i, file in enumerate(files[start: end]):
+            logging.info('processing {} {} {}'.format(i, local_rank, file))
+            features = torch.load(os.path.join(read_dir, file), map_location='cpu')
             all_lines.extend(features)
 
-        print('[total] number of pre-training samples: ', len(all_lines))
+
+        logging.info('[total] number of pre-training samples: {}'.format(len(all_lines)))
 
         return all_lines
 
@@ -109,7 +104,7 @@ class EntityPredictionProcessor():
             files = os.listdir(self.data_dir+'/BB')
             # all_lines = []
             for file in files:
-                print(file)
+                logging.info(file)
                 lines = self._read_json(os.path.join(self.data_dir+'/BB', file))
                 # all_lines.extend(lines)
                 for x in lines:
@@ -128,7 +123,7 @@ class EntityPredictionProcessor():
                 for e in entity_list:
                     fw.write(e + '\n')
 
-        print('The total number of entity vocabulary is: ', len(entity_list))
+        # print('The total number of entity vocabulary is: ', len(entity_list))
         logger.info('The total number of entity vocabulary is: {}'.format(len(entity_list)))
         return entity_list
 
@@ -138,7 +133,7 @@ class EntityPredictionProcessor():
         filtered_anchor = 0
         for (i, x) in enumerate(lines):
             if i % 10000 == 0:
-                print('[total wikipedia papges] Processing  features: ', i)
+                logging.info('[total wikipedia papges] Processing  features: {}'.format(i))
 
             # if i > 100:
             #     break
@@ -208,5 +203,5 @@ class EntityPredictionProcessor():
                               mention_entity=anchor_label,  # 这需要转换成idx表示的
                               description_entity=title_id,  # # 这需要转换成idx表示的
                               ))
-        print('the total number of pre-training samples of this file: ', len(features))
+        logging.info('the total number of pre-training samples of this file: {}'.format(len(features)))
         return features
