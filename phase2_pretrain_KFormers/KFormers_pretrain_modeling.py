@@ -116,14 +116,15 @@ class MLMHead(nn.Module):
 class PreTrainingHeads(nn.Module):
     def __init__(self, config):
         super(PreTrainingHeads, self).__init__()
-        self.predictions = MLMHead(config)
+        # self.predictions = MLMHead(config)
         self.predictions_ent = EntityPredictionHeadV2(config)
 
     def forward(self, token_output,
                 mention_output, mention_candidate_embedding,
                 cls_output, des_candidate_embedding):
 
-        mlm_score = self.predictions(token_output)
+        # mlm_score = self.predictions(token_output)
+        mlm_score = None
         m2e_socre = self.predictions_ent(mention_output, mention_candidate_embedding)
         d2e_score = self.predictions_ent(cls_output, des_candidate_embedding)
         return mlm_score, m2e_socre, d2e_score
@@ -184,7 +185,7 @@ class KModulePretrainingModel(nn.Module):
                                                        cls_output, t2)
 
         # 第一个损失，交叉熵损失，类似于MLM
-        mlm_loss = self.cross_entropy_loss(mlm_logits.view(-1, self.vocab_size), mention_token_label.view(-1))
+        # mlm_loss = self.cross_entropy_loss(mlm_logits.view(-1, self.vocab_size), mention_token_label.view(-1))
 
         # 第二个loss，对比损失，mention=>entity
 
@@ -195,6 +196,6 @@ class KModulePretrainingModel(nn.Module):
         d2e_loss = self.binary_CE_loss(d2e_logits.view(-1, 2), des_entity_labels.view(-1, 2))
         # d2e_loss = self.cross_entropy_loss(d2e_logits.view(-1, input_ids.size(0)), des_entity_labels.view(-1))
 
-        total_loss = m2e_loss + d2e_loss + mlm_loss
+        total_loss = m2e_loss + d2e_loss #+ mlm_loss
 
         return total_loss

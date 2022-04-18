@@ -971,7 +971,7 @@ def get_entity_vocab(file):
     entity_list = []
     with open(file, encoding='utf-8') as f:
         for line in f:
-            entity = line.strip('\n')
+            entity = line.strip('\n').split('\t')[1]
             entity_list.append(entity)
     label_set = dict(zip(entity_list, list(range(len(entity_list)))))  # 1.3m
     return label_set

@@ -80,8 +80,9 @@ class GNN(nn.Module):
 
             # 将original input text的表征和description的表征合起来
             entity_embed  = self.map(entity_embed)
-            entity_embed = self.dropout(self.LayerNorm(entity_embed))
-            center_knowledge_states = torch.cat([center_states, knowledge_states, entity_embed], dim=1)  # batch, L1+N+1, d1
+            knowledge_states = self.dropout(self.LayerNorm(entity_embed + knowledge_states))
+            center_knowledge_states = torch.cat([center_states, knowledge_states], dim=1)  # batch, L1+N+1, d1
+            # center_knowledge_states = self.dropout(self.LayerNorm(center_knowledge_states))
 
             # 这个attention_mask是center和neighbour之间是否可见，也可以不加，默认就是互相可见
             # attention_mask = torch.ones(batch, L).unsqueeze(1).unsqueeze(1).to(hidden_states.device)  # batch, 1, 1, L1+K
@@ -187,11 +188,11 @@ class KFormersModel(nn.Module):
         self.embeddings = BackboneEmbeddings(config)
         self.k_embeddings = KEmbeddings(config_k)
 
-        # self.entity_embedding_table = nn.Embedding(1267331+1, 100)
-        # self.entity_embedding_table.weight.requires_grad = False
+        self.entity_embedding_table = nn.Embedding(1267331+1, 100)
+        self.entity_embedding_table.weight.requires_grad = False
 
-        t = load_entity_embedding(config_k.post_trained_checkpoint_embedding)
-        self.entity_embedding_table = torch.nn.Embedding.from_pretrained(t, freeze=True)
+        # t = load_entity_embedding(config_k.post_trained_checkpoint_embedding)
+        # self.entity_embedding_table = torch.nn.Embedding.from_pretrained(t, freeze=True)
 
         self.encoder = KFormersEncoder(config, config_k, backbone_knowledge_dict)
 
@@ -327,7 +328,6 @@ class RobertaForEntityTyping(BackbonePreTrainedModel):  # 这个不能继承一�
         start_id = start_id.unsqueeze(1)  # batch 1 L
         entity_vec = torch.bmm(start_id, original_text_output).squeeze(1)  # batch d
 
-        # entity_vec = original_text_output[:, 0, :] + entity_vec_2
 
         logits = self.classifier(entity_vec)
         if labels is not None:
@@ -438,6 +438,7 @@ class KFormersForEntityTyping(BackbonePreTrainedModel):
         start_id = start_id.unsqueeze(1)  # batch 1 L
         entity_vec = torch.bmm(start_id, original_text_output).squeeze(1)  # batch d
 
+
         logits = self.classifier(entity_vec)
         if labels is not None:
             loss = self.loss(logits.view(-1, self.num_labels), labels.view(-1, self.num_labels))
@@ -532,4 +533,6 @@ def load_entity_embedding(ckpt):
         if 'entity_embeddings.entity_embeddings.weight' in k:
             entity_embedding_table = v
     t = torch.mean(entity_embedding_table, dim=0, keepdim=True)#, device=entity_embedding_table.device)
-    return torch.cat([entity_embedding_table, t], dim=0)
+    t2 = torch.cat([entity_embedding_table, t], dim=0)
+    print(t2.size())
+    return t2

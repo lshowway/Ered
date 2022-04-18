@@ -74,22 +74,41 @@ class EntityPredictionProcessor():
 
     def get_train_examples(self, data_dir, local_rank, dataset_type=None, start=0, end=-1):
 
-        read_dir = data_dir + '/DD'
+        read_dir = data_dir + '/DD_64'
+        all_features = []
 
-        # load
-        all_lines = []
+        if not os.path.exists(read_dir):
+            os.makedirs(read_dir)
 
-        files = os.listdir(read_dir)
+            json_dir = data_dir + '/BB'
+            json_files = os.listdir(json_dir)
+            t = self.get_labels()
+            label_set = dict(zip(t, list(range(len(t)))))  # 1.3m
 
-        for i, file in enumerate(files[start: end]):
-            logging.info('processing {} {} {}'.format(i, local_rank, file))
-            features = torch.load(os.path.join(read_dir, file), map_location='cpu')
-            all_lines.extend(features)
+            for file in json_files:
+                print(file)
+                if os.path.exists(os.path.join(read_dir, 'cached_%s'%file)):
+                    features = torch.load(read_dir, 'cached_%s'%file)
+                else:
+                    lines = self._read_json(os.path.join(json_dir, file))
+                    features = self._create_examples(lines, label_set=label_set)
+                    if local_rank in [-1, 0]:
+                        torch.save(features, os.path.join(read_dir, 'cached_%s'%file))
+
+                all_features.extend(features)
+        else:
+            # load cached
+            files = os.listdir(read_dir)
+
+            for i, file in enumerate(files[start: end]):
+                logging.info('processing {} {} {}'.format(i, local_rank, file))
+                features = torch.load(os.path.join(read_dir, file), map_location='cpu')
+                all_features.extend(features)
 
 
-        logging.info('[total] number of pre-training samples: {}'.format(len(all_lines)))
+        logging.info('[total] number of pre-training samples: {}'.format(len(all_features)))
 
-        return all_lines
+        return all_features
 
 
     def get_labels(self):
@@ -133,7 +152,7 @@ class EntityPredictionProcessor():
         filtered_anchor = 0
         for (i, x) in enumerate(lines):
             if i % 10000 == 0:
-                logging.info('[total wikipedia papges] Processing  features: {}'.format(i))
+                logging.info('Processing  features: {}'.format(i))
 
             # if i > 100:
             #     break

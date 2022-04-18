@@ -19,7 +19,7 @@ from torch.utils.data import DataLoader, RandomSampler, SequentialSampler
 from torch.utils.data.distributed import DistributedSampler
 from tensorboardX import SummaryWriter
 
-from transformers.models.roberta.tokenization_roberta_fast import RobertaTokenizerFast
+# from transformers.models.roberta.tokenization_roberta_fast import RobertaTokenizerFast
 
 from transformers.optimization import AdamW, get_linear_schedule_with_warmup
 from transformers import (
@@ -45,7 +45,6 @@ def load_model(args):
     config.entity_vocab_size = args.entity_vocab_size
     config.entity_emb_size = args.entity_emb_size
 
-
     model = KModulePretrainingModel(config)  # this is KModule
     Kmodule_state_dict = model.state_dict()  # KFormers的全部参数
 
@@ -54,31 +53,35 @@ def load_model(args):
         pretrained_state_dict = AutoModelForPreTraining.from_pretrained(args.post_trained_checkpoint).state_dict()
     else:
         pretrained_state_dict = AutoModelForPreTraining.from_pretrained(args.model_name_or_path).state_dict()
+
     news_k_state_dict = OrderedDict()
     for key, value in pretrained_state_dict.items():
+        # print(value.requires_grad)
         if key in Kmodule_state_dict:
             news_k_state_dict[key] = value
 
     Kmodule_state_dict.update(news_k_state_dict)
-    # == 在这里设置backbone的参数更新情况 == 只更新前六层
-    for k, v in Kmodule_state_dict.items():
-        v.requires_grad = False
-        if 'roberta.encoder.layer.' in k:
-            t1 = k.split('roberta.encoder.layer.')[1]
-            t2 = t1.split('.')[0]
-            t = 'roberta.encoder.layer.' + t2
-            if t in ['roberta.encoder.layer.0', 'roberta.encoder.layer.1',
-                     'roberta.encoder.layer.2', 'roberta.encoder.layer.3',
-                     'roberta.encoder.layer.4', 'roberta.encoder.layer.5']:  # []表示参数更新的层
-            # if t in ['roberta.encoder.layer.5', 'roberta.encoder.layer.8',
-            #          'roberta.encoder.layer.11', 'roberta.encoder.layer.14',
-            #          'roberta.encoder.layer.17', 'roberta.encoder.layer.20']:  # []表示参数更新的层
-            # if t in []: # 直接不更新
-                v.requires_grad = True
-        if 'entity_embeddings' in k:
-            v.requires_grad = True
-    # == 在这里设置backbone的参数更新情况 ==
+
     model.load_state_dict(state_dict=Kmodule_state_dict)
+
+    # == 在这里设置backbone的参数更新情况 ==
+    # for k, v in model.named_parameters(): # fix roberta
+    #     v.requires_grad = False
+    #     if 'roberta' not in k:
+    #         v.requires_grad = True
+
+
+    for k, v in model.named_parameters(): # 更新6，9，12，15
+        v.requires_grad = False
+        update_list = ['layer.5', 'layer.8', 'layer.14',
+                       'layer.17', 'layer.20', 'layer.21']
+        if 'roberta' not in k: # 更新entity相关
+            v.requires_grad = True
+        for pa in update_list:
+            if pa in k:
+                v.requires_grad = True
+
+    # == 在这里设置backbone的参数更新情况 ==
 
     return model
 
@@ -145,12 +148,13 @@ def do_train(args, model, train_dataset, val_dataset=None, test_dataset=None, en
     args.total_batch_size = args.per_gpu_train_batch_size * max(1, args.n_gpu)
     if args.local_rank == -1:
         train_sampler = RandomSampler(train_dataset)
-        print('random ~~~~')
     else:
         train_sampler = DistributedSampler(train_dataset)
     train_dataloader = DataLoader(train_dataset, sampler=train_sampler, batch_size=args.total_batch_size, drop_last=True, pin_memory=True)
 
-    param_optimizer = list(model.named_parameters())
+    # param_optimizer = list(model.named_parameters())
+    param_optimizer = [(k, v) for k, v in model.named_parameters() if v.requires_grad]
+
     no_decay = ['bias', 'LayerNorm.bias', 'LayerNorm.weight']
     optimizer_grouped_parameters = [
         {'params': [p for n, p in param_optimizer if not any(
@@ -201,7 +205,7 @@ def do_train(args, model, train_dataset, val_dataset=None, test_dataset=None, en
     global_step = 0
 
     if args.local_rank in [-1, 0]:
-        tb_writer = SummaryWriter(log_dir="./runs/" + "KModule", purge_step=global_step)
+        tb_writer = SummaryWriter(log_dir="./runs_%s/"%args.max_seq_length + "KModule", purge_step=global_step)
 
     train_iterator = trange(args.num_train_epochs, desc="Epoch", disable=args.local_rank not in [-1, 0])
     set_seed(args)  # Added here for reproducebility (even between python 2 and 3)
@@ -214,12 +218,16 @@ def do_train(args, model, train_dataset, val_dataset=None, test_dataset=None, en
     # mention_entity_labels = torch.arange(0, args.total_batch_size, device=args.device, dtype=torch.long)
     # des_entity_labels = torch.arange(0, args.total_batch_size, device=args.device, dtype=torch.long)
 
+    for k, v in model.named_parameters():
+        logging.info('{} {}'.format(k, v.requires_grad))  # True
+
     for epoch in train_iterator:
         if epoch > 0:
             # train_sampler = RandomSampler(train_dataset) if args.local_rank == -1 else DistributedSampler(train_dataset)
             # train_dataloader = DataLoader(train_dataset, sampler=train_sampler, batch_size=args.total_batch_size, drop_last=True, pin_memory=True)
             train_dataloader.sampler.set_epoch(epoch)
         epoch_iterator = tqdm(train_dataloader, desc="Training", disable=args.local_rank not in [-1, 0])
+
         for step, batch in enumerate(epoch_iterator):
             model.train()
             batch = tuple(t.to(args.device) for t in batch)
@@ -394,6 +402,10 @@ def main():
     args.entity_vocab_size = len(entity_set)
 
     model = load_model(args)
+
+
+
+
     print('22', args.local_rank) # 0
     if args.local_rank == 0:
         torch.distributed.barrier()  # Make sure only the first process in distributed training will download model & vocab
@@ -404,10 +416,13 @@ def main():
     print('33', args.local_rank)  # 0
     # Training
     if args.do_train:
-        start, end = 0, 30
-        # start, end = 30, 60
-        # start, end = 60, 90
-        # start, end = 90, 100
+        if args.max_seq_length < 128:
+            start, end = None, None # all
+        else:
+            start, end = 0, 30
+            # start, end = 30, 60
+            # start, end = 60, 90
+            # start, end = 78, 108
         train_dataset = load_and_cache_examples(args, processor, 'train', evaluate=False, start=start, end=end)
         # val_dataset = load_and_cache_examples(args, processor, tokenizer, 'dev', evaluate=True)
 
