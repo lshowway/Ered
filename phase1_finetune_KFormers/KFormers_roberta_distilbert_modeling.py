@@ -1,4 +1,6 @@
 import math
+import os.path
+
 import torch.nn as nn
 import torch
 
@@ -34,6 +36,7 @@ from transformers.models.distilbert.modeling_distilbert import \
 )  # 这个是k module
 
 
+
 class GNN(nn.Module):
     def __init__(self, config, config_k=None):
         super(GNN, self).__init__()
@@ -49,14 +52,17 @@ class GNN(nn.Module):
             self.key = nn.Linear(config.hidden_size, self.all_head_size)
             self.value = nn.Linear(config.hidden_size, self.all_head_size)
 
+            self.LayerNorm = nn.LayerNorm(config.hidden_size, eps=config.layer_norm_eps)
             self.dropout = nn.Dropout(config.attention_probs_dropout_prob)
+
+            self.map = nn.Linear(100, config.hidden_size)
 
     def transpose_for_scores(self, x):
         new_x_shape = x.size()[:-1] + (self.num_attention_heads, self.attention_head_size)
         x = x.view(*new_x_shape)
         return x.permute(0, 2, 1, 3)
 
-    def forward(self, hidden_states, k_hidden_states=None, attention_mask=None, rel_pos=None):
+    def forward(self, hidden_states, k_hidden_states=None, entity_embed=None):
         if self.config_k is not None:
             # 处理original input text的表征
             # 第一种： 使用CLS的表征
@@ -73,7 +79,9 @@ class GNN(nn.Module):
             knowledge_states = self.projection(knowledge_states)  # batch, N, d1=1024
 
             # 将original input text的表征和description的表征合起来
-            center_knowledge_states = torch.cat([center_states, knowledge_states], dim=1)  # batch, L1+N, d1
+            entity_embed  = self.map(entity_embed)
+            entity_embed = self.dropout(self.LayerNorm(entity_embed))
+            center_knowledge_states = torch.cat([center_states, knowledge_states, entity_embed], dim=1)  # batch, L1+N+1, d1
 
             # 这个attention_mask是center和neighbour之间是否可见，也可以不加，默认就是互相可见
             # attention_mask = torch.ones(batch, L).unsqueeze(1).unsqueeze(1).to(hidden_states.device)  # batch, 1, 1, L1+K
@@ -100,14 +108,15 @@ class GNN(nn.Module):
             new_context_layer_shape = context_layer.size()[:-2] + (self.all_head_size,)
             context_layer = context_layer.view(*new_context_layer_shape)  # batch, L1+N, d1(d3*d4)
 
-            # 使用受description影响后的original text的表征
-            hidden_states[:, -1, :] = context_layer[:, 0, :]  # 替换掉 batch L1, d1
-            # 被neighbour全面影响的hidden_States，感觉这个的效果应该最好 (不收敛)
-            # hidden_states = context_layer[:, :L1, :].to(dtype=hidden_states.dtype)
+            # 使用受description影响后的original text的表征,为啥是-1
+            # hidden_states[:, -1, :] = context_layer[:, 0, :]  # 替换掉 batch L1, d1
+            hidden_states[:, 0, :] = context_layer[:, 0, :]  # 替换掉 batch L1, d1
+            # hidden_states[:, :L1, :] = context_layer[:, :L1, :]
 
             return hidden_states  # batch, d
         else:
             return hidden_states
+
 
 
 class KFormersLayer(nn.Module):
@@ -117,16 +126,15 @@ class KFormersLayer(nn.Module):
         if config_k is not None:
             self.backbone_layer = BackboneLayer(config)  # 处理qk pair的backbone module，分类
             self.k_layer = KnowledgeLayer(config_k)  # 处理description的knowledge module，表示
-            # 在这儿禁止参数更新，但是embedding还是更新的，所以不如在最外面设置参数。
-            # for p in self.k_layer.parameters():
-            #     p.requires_grad = False
         else:
             self.backbone_layer = BackboneLayer(config)  # 处理qk pair的backbone module，分类
             self.k_layer = None
         self.gnn = GNN(config, config_k)
 
     def forward(self, hidden_states, attention_mask,
-                k_hidden_states_list=None, k_attention_mask_list=None):
+                k_hidden_states_list=None, k_attention_mask_list=None,
+                entity_embed=None):
+
         layer_outputs = self.backbone_layer(hidden_states=hidden_states, attention_mask=attention_mask)
         hidden_states = layer_outputs[0]  # batch L d
         if self.k_layer is not None and k_hidden_states_list is not None:  # 现在先测试baseline没问题，之后用上面一行
@@ -134,10 +142,11 @@ class KFormersLayer(nn.Module):
             k_layer_outputs = k_layer_outputs[0]
             batch, neighbour_num, description_len = k_attention_mask_list.size()
             k_layer_outputs = k_layer_outputs.reshape(batch, neighbour_num, description_len, -1)  # batch, N, L2, d2
-            hidden_states = self.gnn(hidden_states, k_layer_outputs)  # 这里对batch 0 d进行处理，使用neighbour的cls位？
+            hidden_states = self.gnn(hidden_states, k_layer_outputs, entity_embed)  # 这里对batch 0 d进行处理，使用neighbour的cls位？
             return hidden_states, k_layer_outputs.reshape(batch*neighbour_num, description_len, -1)
         else:
             return hidden_states, k_hidden_states_list
+
 
 
 class KFormersEncoder(nn.Module):
@@ -154,11 +163,14 @@ class KFormersEncoder(nn.Module):
         self.layer = nn.ModuleList(module_list)
 
     def forward(self, hidden_states, attention_mask=None,
-                k_hidden_states_list=None, k_attention_mask_list=None):
+                k_hidden_states_list=None, k_attention_mask_list=None,
+                entity_embed=None):
+
         for i, layer_module in enumerate(self.layer):
             layer_outputs = layer_module(hidden_states=hidden_states, attention_mask=attention_mask,
                                          k_hidden_states_list=k_hidden_states_list,
-                                         k_attention_mask_list=k_attention_mask_list)
+                                         k_attention_mask_list=k_attention_mask_list,
+                                         entity_embed=entity_embed)
             hidden_states = layer_outputs[0]
             k_hidden_states_list = layer_outputs[1]
 
@@ -166,12 +178,21 @@ class KFormersEncoder(nn.Module):
         return outputs
 
 
+
 class KFormersModel(nn.Module):
     def __init__(self, config, config_k, backbone_knowledge_dict):
         super(KFormersModel, self).__init__()
         self.config = config
+        self.config_k = config_k
         self.embeddings = BackboneEmbeddings(config)
         self.k_embeddings = KEmbeddings(config_k)
+
+        # self.entity_embedding_table = nn.Embedding(1267331+1, 100)
+        # self.entity_embedding_table.weight.requires_grad = False
+
+        t = load_entity_embedding(config_k.post_trained_checkpoint_embedding)
+        self.entity_embedding_table = torch.nn.Embedding.from_pretrained(t, freeze=True)
+
         self.encoder = KFormersEncoder(config, config_k, backbone_knowledge_dict)
 
         if not config.add_pooling_layer:
@@ -192,7 +213,7 @@ class KFormersModel(nn.Module):
         return extended_attention_mask
 
     def forward(self, input_ids=None, attention_mask=None, token_type_ids=None, position_ids=None,
-                k_input_ids_list=None, k_attention_mask_list=None, k_token_type_ids_list=None, k_position_ids=None):
+                k_input_ids_list=None, k_attention_mask_list=None, k_token_type_ids_list=None, k_position_ids=None, entities=None):
 
         extended_attention_mask = self.get_extended_attention_mask(attention_mask, input_shape=input_ids.size())
         embedding_output = self.embeddings(input_ids=input_ids, position_ids=position_ids,
@@ -201,11 +222,14 @@ class KFormersModel(nn.Module):
         if k_input_ids_list is not None:
             batch, neighbour_num, description_len = k_input_ids_list.size()
             k_embedding_output = self.k_embeddings(input_ids=k_input_ids_list.reshape(-1, description_len))  # distilBert没有position和segment
+            entity_embed = self.entity_embedding_table(entities)
         else:
             k_embedding_output = None
+            entity_embed=None
         encoder_outputs = self.encoder(hidden_states=embedding_output, attention_mask=extended_attention_mask,
                                        k_hidden_states_list=k_embedding_output,
-                                       k_attention_mask_list=k_attention_mask_list)  # batch L d
+                                       k_attention_mask_list=k_attention_mask_list,
+                                       entity_embed=entity_embed)  # batch L d
         original_text_output, description_output = encoder_outputs
         if self.pooler is None:
             return encoder_outputs  # original_text_output, description_output
@@ -294,12 +318,17 @@ class RobertaForEntityTyping(BackbonePreTrainedModel):  # 这个不能继承一�
 
     def forward(self, input_ids=None, attention_mask=None, token_type_ids=None, position_ids=None, \
                 k_input_ids_list=None, k_mask=None, k_attention_mask_list=None,
-                k_token_type_ids_list=None, k_position_ids=None, labels=None, start_id=None):
+                k_token_type_ids_list=None, k_position_ids=None, labels=None, start_id=None, entities=None):
+
         outputs = self.roberta(input_ids=input_ids, attention_mask=attention_mask,
                                 token_type_ids=token_type_ids, position_ids=position_ids)
         original_text_output = outputs[0]  # batch L d
+
         start_id = start_id.unsqueeze(1)  # batch 1 L
         entity_vec = torch.bmm(start_id, original_text_output).squeeze(1)  # batch d
+
+        # entity_vec = original_text_output[:, 0, :] + entity_vec_2
+
         logits = self.classifier(entity_vec)
         if labels is not None:
             loss = self.loss(logits.view(-1, self.num_labels), labels.view(-1, self.num_labels))
@@ -323,7 +352,7 @@ class RobertaForRelationClassification(BackbonePreTrainedModel):  # 这个不能
 
     def forward(self, input_ids=None, attention_mask=None, token_type_ids=None, position_ids=None, \
                 k_input_ids_list=None, k_mask=None, k_attention_mask_list=None,
-                k_token_type_ids_list=None, k_position_ids=None, labels=None, start_id=None):
+                k_token_type_ids_list=None, k_position_ids=None, labels=None, start_id=None, entities=None):
 
         outputs = self.roberta(input_ids=input_ids, attention_mask=attention_mask,
                                 token_type_ids=token_type_ids, position_ids=position_ids)
@@ -383,12 +412,10 @@ class RobertaForSequenceClassification(BackbonePreTrainedModel):
 
 
 # ---------------------------------------------------------------------
-class KFormersForEntityTyping(BackbonePreTrainedModel):  # 这个不能继承一个类吧？两个？
+class KFormersForEntityTyping(BackbonePreTrainedModel):
     def __init__(self, config, config_k, backbone_knowledge_dict):
         super(KFormersForEntityTyping, self).__init__(config)
         self.num_labels = config.num_labels
-        # self.num_labels = 113
-        # config.num_labels = 113
         config.add_pooling_layer = False
 
         self.kformers = KFormersModel(config, config_k, backbone_knowledge_dict)
@@ -400,15 +427,17 @@ class KFormersForEntityTyping(BackbonePreTrainedModel):  # 这个不能继承一
 
     def forward(self, input_ids=None, attention_mask=None, token_type_ids=None, position_ids=None, \
                 k_input_ids_list=None, k_mask=None, k_attention_mask_list=None,
-                k_token_type_ids_list=None, k_position_ids=None, labels=None, start_id=None):
+                k_token_type_ids_list=None, k_position_ids=None, labels=None, start_id=None, entities=None):
 
         outputs = self.kformers(input_ids=input_ids, attention_mask=attention_mask,
                                 token_type_ids=token_type_ids, position_ids=position_ids,
                                 k_input_ids_list=k_input_ids_list, k_attention_mask_list=k_attention_mask_list,
-                                k_token_type_ids_list=k_token_type_ids_list, k_position_ids=k_position_ids)
+                                k_token_type_ids_list=k_token_type_ids_list, k_position_ids=k_position_ids, entities=entities)
+
         original_text_output = outputs[0]  # batch L d
         start_id = start_id.unsqueeze(1)  # batch 1 L
         entity_vec = torch.bmm(start_id, original_text_output).squeeze(1)  # batch d
+
         logits = self.classifier(entity_vec)
         if labels is not None:
             loss = self.loss(logits.view(-1, self.num_labels), labels.view(-1, self.num_labels))
@@ -422,23 +451,21 @@ class KFormersForRelationClassification(BackbonePreTrainedModel):  # 这个不�
     def __init__(self, config, config_k, backbone_knowledge_dict):
         super(KFormersForRelationClassification, self).__init__(config)
         self.num_labels = config.num_labels
-        # self.num_labels = 113
-        # config.num_labels = 113
         config.add_pooling_layer = False
 
         self.kformers = KFormersModel(config, config_k, backbone_knowledge_dict)
-        self.output_layer = RobertaOutputLayerRelationClassification(config)
+        self.classifier = RobertaOutputLayerRelationClassification(config)
 
         self.loss = nn.CrossEntropyLoss(reduction='mean')
         self.init_weights()
 
     def forward(self, input_ids=None, attention_mask=None, token_type_ids=None, position_ids=None, \
                 k_input_ids_list=None, k_mask=None, k_attention_mask_list=None,
-                k_token_type_ids_list=None, k_position_ids=None, labels=None, start_id=None):
+                k_token_type_ids_list=None, k_position_ids=None, labels=None, start_id=None, entities=None):
         outputs = self.kformers(input_ids=input_ids, attention_mask=attention_mask,
                                 token_type_ids=token_type_ids, position_ids=position_ids,
                                 k_input_ids_list=k_input_ids_list, k_attention_mask_list=k_attention_mask_list,
-                                k_token_type_ids_list=k_token_type_ids_list, k_position_ids=k_position_ids)
+                                k_token_type_ids_list=k_token_type_ids_list, k_position_ids=k_position_ids, entities=entities)
         original_text_output = outputs[0]  # batch L d
 
         if len(start_id.shape) == 3:
@@ -446,7 +473,7 @@ class KFormersForRelationClassification(BackbonePreTrainedModel):  # 这个不�
             subj_output = torch.bmm(sub_start_id, original_text_output)
             obj_output = torch.bmm(obj_start_id, original_text_output)
             entity_vec = torch.cat([subj_output.squeeze(1), obj_output.squeeze(1)], dim=1)
-            logits = self.output_layer(entity_vec)
+            logits = self.classifier(entity_vec)
 
             if labels is not None:
                 loss = self.loss(logits.view(-1, self.num_labels), labels.view(-1).to(torch.long))
@@ -472,7 +499,7 @@ class KFormersForSequenceClassification(BackbonePreTrainedModel):
 
     def forward(self, input_ids=None, attention_mask=None, token_type_ids=None, position_ids=None,
                 k_input_ids_list=None, k_mask=None, k_attention_mask_list=None,
-                k_token_type_ids_list=None, k_position_ids=None, labels=None,):
+                k_token_type_ids_list=None, k_position_ids=None, labels=None, start_id=None):
 
         outputs = self.kformers(input_ids, attention_mask=attention_mask,
                                 token_type_ids=token_type_ids, position_ids=position_ids,
@@ -495,3 +522,14 @@ class KFormersForSequenceClassification(BackbonePreTrainedModel):
         else:
             return logits
 
+
+def load_entity_embedding(ckpt):
+    entity_embedding_table = None
+    # ckpt = "../phase2_pretrain_KFormers/output_update_6_40_60-90/checkpoint-260000/pytorch_model.bin"
+
+    state_dict = torch.load(os.path.join(ckpt, 'pytorch_model.bin'))
+    for k, v in state_dict.items():
+        if 'entity_embeddings.entity_embeddings.weight' in k:
+            entity_embedding_table = v
+    t = torch.mean(entity_embedding_table, dim=0, keepdim=True)#, device=entity_embedding_table.device)
+    return torch.cat([entity_embedding_table, t], dim=0)

@@ -146,20 +146,26 @@ def load_kformers(args, backbone_config_class, k_config_class, backbone_model_cl
                     news_kformers_state_dict[key] = value
 
             # for k, v in news_kformers_state_dict.items():
-            #     # print(k, v.size())
             #     print(k)
-            # 在这里设置K-module的参数更新不更新
-            if not args.update_K_module:
-                for k, v in news_kformers_state_dict.items():
-                    if 'k_' in k:
-                        v.requires_grad = False
+
             state_dict.update(news_kformers_state_dict)
             kformers_model.load_state_dict(state_dict=state_dict)
+
+            # == 在这里设置K-module的参数更新不更新 ==
+            if not args.update_K_module:
+                for k, v in kformers_model.named_parameters():
+                    if 'k_' in k:
+                        v.requires_grad = False
+
+            # == 在这里设置K-module的参数更新不更新 ==
         return kformers_model
 
     else:
-        baseline_model = BaselineDownstreamModel.from_pretrained(args.backbone_model_name_or_path, config=config_backbone)
-
+        if args.post_trained_checkpoint is not None:
+            baseline_model = BaselineDownstreamModel.from_pretrained(args.post_trained_checkpoint,
+                                                                     config=config_backbone)
+        else:
+            baseline_model = BaselineDownstreamModel.from_pretrained(args.backbone_model_name_or_path, config=config_backbone)
         return baseline_model
 
 
@@ -168,7 +174,9 @@ def do_train(args, model, train_dataset, val_dataset, test_dataset=None):
     train_sampler = RandomSampler(train_dataset) if args.local_rank == -1 else DistributedSampler(train_dataset)
     train_dataloader = DataLoader(train_dataset, sampler=train_sampler, batch_size=args.total_batch_size)
 
-    param_optimizer = list(model.named_parameters())
+    # param_optimizer = list(model.named_parameters())
+    param_optimizer = [(k, v) for k, v in model.named_parameters() if v.requires_grad]
+
     no_decay = ['bias', 'LayerNorm.bias', 'LayerNorm.weight']
     optimizer_grouped_parameters = [
         {'params': [p for n, p in param_optimizer if not any(
@@ -232,13 +240,15 @@ def do_train(args, model, train_dataset, val_dataset, test_dataset=None):
 
             if args.task_name in ['openentity', 'figer', 'fewrel', 'tacred']:
                 input_ids, attention_mask, token_type_ids, start_id = batch[0], batch[1], batch[2], batch[3]
-                k_input_ids, k_mask, k_attention_mask, k_token_type_ids = batch[-5], batch[-4], batch[-3], batch[-2]
-                labels = batch[-1]
+                k_input_ids, k_mask, k_attention_mask, k_token_type_ids = batch[-6], batch[-5], batch[-4], batch[-3]
+                labels = batch[-2]
+                entities = batch[-1]
             else:
                 input_ids, attention_mask, token_type_ids = batch[0], batch[1], batch[2]
-                k_input_ids, k_mask, k_attention_mask, k_token_type_ids = batch[-5], batch[-4], batch[-3], batch[-2]
-                labels = batch[-1]
+                k_input_ids, k_mask, k_attention_mask, k_token_type_ids = batch[-6], batch[-5], batch[-4], batch[-3]
+                labels = batch[-2]
                 start_id = None
+                entities = batch[-1]
 
             if args.add_knowledge:
                 inputs = {"input_ids": input_ids,
@@ -250,6 +260,7 @@ def do_train(args, model, train_dataset, val_dataset, test_dataset=None):
                           "k_token_type_ids_list": k_token_type_ids if args.knowledge_model_type in ['distilbert'] else None,
                           "labels": labels,
                           "start_id": start_id,
+                          "entities": entities,
                           }
             else:
                 inputs = {"input_ids": input_ids,
@@ -261,11 +272,15 @@ def do_train(args, model, train_dataset, val_dataset, test_dataset=None):
                           "k_token_type_ids_list": None,
                           "labels": labels,
                           "start_id": start_id,
+                          "entities": entities,
                           }
 
-            if args.task_name in ['openentity', 'figer', 'fewrel', 'tacred']:
-                inputs['start_id'] = start_id
-
+            # if args.task_name in ['openentity', 'figer', 'fewrel', 'tacred']:
+            #     inputs['start_id'] = start_id
+            # for k, v in model.named_parameters():
+            #     print(k, v.requires_grad) # True
+            # for k, v in model.state_dict().items():
+            #     print('k', v.requires_grad) # 都是False
             _, batch_loss = model(**inputs)
             if args.n_gpu > 1:
                 batch_loss = batch_loss.mean()  # mean() to average on multi-gpu parallel training
@@ -338,8 +353,8 @@ def do_eval(model, args, val_dataset, global_step):
     eval_iterator = tqdm(val_dataloader, desc="Evaluating", disable=args.local_rank not in [-1, 0])
     for step, batch in enumerate(eval_iterator):
 
-        if step > 5:
-            break
+        # if step > 5:
+        #     break
 
         model.eval()
         batch = tuple(t.to(args.device) for t in batch)
@@ -347,12 +362,15 @@ def do_eval(model, args, val_dataset, global_step):
 
             if args.task_name in ['openentity', 'figer', 'fewrel', 'tacred']:
                 input_ids, attention_mask, token_type_ids, start_id = batch[0], batch[1], batch[2], batch[3]
-                k_input_ids, k_mask, k_attention_mask, k_token_type_ids = batch[-5], batch[-4], batch[-3], batch[-2]
-                labels = batch[-1]
+                k_input_ids, k_mask, k_attention_mask, k_token_type_ids = batch[-6], batch[-5], batch[-4], batch[-3]
+                labels = batch[-2]
+                entities = batch[-1]
             else:
                 input_ids, attention_mask, token_type_ids = batch[0], batch[1], batch[2]
-                k_input_ids, k_mask, k_attention_mask, k_token_type_ids = batch[-5], batch[-4], batch[-3], batch[-2]
-                labels = batch[-1]
+                k_input_ids, k_mask, k_attention_mask, k_token_type_ids = batch[-6], batch[-5], batch[-4], batch[-3]
+                labels = batch[-2]
+                start_id = None
+                entities = batch[-1]
 
             if args.add_knowledge:
                 inputs = {"input_ids": input_ids,
@@ -364,6 +382,8 @@ def do_eval(model, args, val_dataset, global_step):
                           "k_token_type_ids_list": k_token_type_ids if args.knowledge_model_type in [
                               'distilbert'] else None,
                           "labels": None,
+                          "start_id": start_id,
+                          'entities': entities
                           }
             else:
                 inputs = {"input_ids": input_ids,
@@ -374,10 +394,12 @@ def do_eval(model, args, val_dataset, global_step):
                           "k_attention_mask_list": None,
                           "k_token_type_ids_list": None,
                           "labels": None,
+                          "start_id": start_id,
+                          'entities': entities
                           }
 
-            if args.task_name in ['openentity', 'figer', 'fewrel', 'tacred']:
-                inputs['start_id'] = start_id
+            # if args.task_name in ['openentity', 'figer', 'fewrel', 'tacred']:
+            #     inputs['start_id'] = start_id
 
             logits = model(**inputs)
             if preds is None:
@@ -448,6 +470,8 @@ def main():
     backbone_config_class, backbone_model_class, backbone_tokenizer_class = BACKBONE_MODEL_CLASSES[
         args.backbone_model_type]
     k_config_class, k_model_class, k_tokenizer_class = KNOWLEDGE_MODEL_CLASSES[args.knowledge_model_type]
+
+    k_config_class.post_trained_checkpoint_embedding = args.post_trained_checkpoint_embedding
 
     backbone_tokenizer = backbone_tokenizer_class.from_pretrained(args.backbone_model_name_or_path)
     knowledge_tokenizer = k_tokenizer_class.from_pretrained(args.knowledge_model_name_or_path)

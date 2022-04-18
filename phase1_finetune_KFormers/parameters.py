@@ -10,6 +10,7 @@ def parse_args():
     parser.add_argument("--data_dir", type=str, default="", )
     parser.add_argument("--output_dir", type=str, default="", )
     parser.add_argument("--qid_file", type=str, default="../data/knowledge/all_entity_typing_QIDs_Ename_des.wikipedia", )
+    parser.add_argument("--entity_vocab_file", type=str, default="../data/knowledge/entity_vocab.tsv", )
 
     parser.add_argument("--train_batch_size", type=int, default=4)
     parser.add_argument("--valid_batch_size", type=int, default=30)  # 300
@@ -37,6 +38,7 @@ def parse_args():
     parser.add_argument("--backbone_model_name_or_path", default="bert-base-uncased", type=str, )
     parser.add_argument("--knowledge_model_name_or_path", default="distilbert-base-uncased", type=str, )
     parser.add_argument("--post_trained_checkpoint", default=None, type=str)
+    parser.add_argument("--post_trained_checkpoint_embedding", default="../phase2_pretrain_KFormers/output_update_6_40_60-90/checkpoint-260000/", type=str)
 
     parser.add_argument("--backbone_knowledge_dict", default={0: 0, 1: 0, 3: 1, 5: 2, 7: 3, 9: 4, 11: 5}, type=dict)
     # parser.add_argument("--backbone_knowledge_dict", default={0: 0, 2: 1, 4: 2, 6: 3, 8: 4, 10: 5}, type=dict)

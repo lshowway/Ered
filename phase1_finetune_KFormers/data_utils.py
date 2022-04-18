@@ -19,8 +19,8 @@ def load_and_cache_examples(args, processor, tokenizer, k_tokenizer, dataset_typ
     input_mode = input_modes[args.task_name]
     output_mode = output_modes[args.task_name]
     # Load data features from cache or dataset file
-    cached_features_file = os.path.join(args.data_dir, 'cached_{}_{}_{}_{}_{}_{}_{}_{}'.format(
-        args.model_type, args.backbone_model_type, args.knowledge_model_type,
+    cached_features_file = os.path.join(args.data_dir, 'cached_{}_{}_{}_use-entity={}_{}_{}_{}_{}_{}'.format(
+        args.model_type, args.backbone_model_type, args.knowledge_model_type, args.use_entity,
         args.task_name,
         dataset_type,
         str(args.backbone_seq_length),
@@ -42,62 +42,16 @@ def load_and_cache_examples(args, processor, tokenizer, k_tokenizer, dataset_typ
                                                                   tokenizer, k_tokenizer)
         elif input_mode == 'single_sentence':
             features = convert_examples_to_features_single_sentence(examples, label_list, args.qid_file, args.backbone_seq_length,
-                                                   args.knowledge_seq_length, args.max_num_entity, tokenizer, k_tokenizer,
-                                                   output_mode, input_mode,
-                                                    cls_token_at_end=bool(args.model_type in ['xlnet']),
-                                                    # xlnet has a cls token at the end
-                                                    cls_token=tokenizer.cls_token,
-                                                    cls_token_segment_id=2 if args.model_type in ['xlnet'] else 0,
-                                                    sep_token=tokenizer.sep_token,
-                                                    sep_token_extra=bool(args.model_type in ['roberta']),
-                                                    # roberta uses an extra separator b/w pairs of sentences, cf. github.com/pytorch/fairseq/commit/1684e166e3da03f5b600dbb7855cb98ddfcd0805
-                                                    pad_on_left=bool(args.model_type in ['xlnet']),
-                                                    # pad on the left for xlnet
-                                                    pad_token=tokenizer.convert_tokens_to_ids([tokenizer.pad_token])[0],
-                                                    pad_token_segment_id=4 if args.model_type in ['xlnet'] else 0,)
+                                                   args.knowledge_seq_length, args.max_num_entity, tokenizer, k_tokenizer,)
         elif input_mode == 'entity_sentence':
-            features = convert_examples_to_features_entity_typing(examples, args.qid_file, args.backbone_seq_length,
-                                                   args.knowledge_seq_length, args.max_num_entity, tokenizer, k_tokenizer,
-                                                                  output_mode, input_mode,
-                                                                  cls_token_at_end=bool(args.model_type in ['xlnet']),
-                                                                  # xlnet has a cls token at the end
-                                                                  cls_token=tokenizer.cls_token,
-                                                                  cls_token_segment_id=2 if args.model_type in [
-                                                                      'xlnet'] else 0,
-                                                                  sep_token=tokenizer.sep_token,
-                                                                  sep_token_extra=bool(args.model_type in ['roberta']),
-                                                                  # roberta uses an extra separator b/w pairs of sentences, cf. github.com/pytorch/fairseq/commit/1684e166e3da03f5b600dbb7855cb98ddfcd0805
-                                                                  pad_on_left=bool(args.model_type in ['xlnet']),
-                                                                  # pad on the left for xlnet
-                                                                  pad_token=
-                                                                  tokenizer.convert_tokens_to_ids([tokenizer.pad_token])[0],
-                                                                  pad_token_segment_id=4 if args.model_type in [
-                                                                      'xlnet'] else 0,
+            features = convert_examples_to_features_entity_typing(args, examples,
+                                                                  args.backbone_seq_length, args.knowledge_seq_length,
+                                                                  args.max_num_entity, tokenizer, k_tokenizer,
                                                                   )
         elif input_mode == "entity_entity_sentence":
-            features = convert_examples_to_features_relation_classification(examples, label_list, args.qid_file, args.backbone_seq_length,
-                                                                            args.knowledge_seq_length,
-                                                                            args.max_num_entity, tokenizer, k_tokenizer,
-                                                                            output_mode, input_mode,
-                                                                            cls_token_at_end=bool(
-                                                                                args.model_type in ['xlnet']),
-                                                                            # xlnet has a cls token at the end
-                                                                            cls_token=tokenizer.cls_token,
-                                                                            cls_token_segment_id=2 if args.model_type in [
-                                                                                'xlnet'] else 0,
-                                                                            sep_token=tokenizer.sep_token,
-                                                                            sep_token_extra=bool(
-                                                                                args.model_type in ['roberta']),
-                                                                            # roberta uses an extra separator b/w pairs of sentences, cf. github.com/pytorch/fairseq/commit/1684e166e3da03f5b600dbb7855cb98ddfcd0805
-                                                                            pad_on_left=bool(
-                                                                                args.model_type in ['xlnet']),
-                                                                            # pad on the left for xlnet
-                                                                            pad_token=
-                                                                            tokenizer.convert_tokens_to_ids(
-                                                                                [tokenizer.pad_token])[0],
-                                                                            pad_token_segment_id=4 if args.model_type in [
-                                                                                'xlnet'] else 0,
-                                                                            )
+            features = convert_examples_to_features_relation_classification(args, examples,
+                                                                            args.backbone_seq_length, args.knowledge_seq_length,
+                                                                            args.max_num_entity, tokenizer, k_tokenizer,)
         else:
             features = None
         if args.local_rank in [-1, 0]:
@@ -106,46 +60,32 @@ def load_and_cache_examples(args, processor, tokenizer, k_tokenizer, dataset_typ
 
     if args.local_rank == 0 and not evaluate:
         torch.distributed.barrier()  # Make sure only the first process in distributed training process the dataset, and the others will use the cache
-    if isinstance(features, list):
-        all_input_ids = torch.tensor([f.input_ids for f in features], dtype=torch.long)
-        all_input_mask = torch.tensor([f.input_mask for f in features], dtype=torch.long)
-        all_segment_ids = torch.tensor([f.segment_ids for f in features], dtype=torch.long)
+    # if isinstance(features, list):
+    all_input_ids = torch.tensor([f.input_ids for f in features], dtype=torch.long)
+    all_input_mask = torch.tensor([f.input_mask for f in features], dtype=torch.long)
+    all_segment_ids = torch.tensor([f.segment_ids for f in features], dtype=torch.long)
 
-        all_input_ids_k = torch.tensor([f.k_input_ids for f in features], dtype=torch.long)
-        all_k_mask = torch.tensor([f.k_mask for f in features], dtype=torch.long)
-        all_input_mask_k = torch.tensor([f.k_input_mask for f in features], dtype=torch.long)
-        all_segment_ids_k = torch.tensor([f.k_segment_ids for f in features], dtype=torch.long)
+    all_input_ids_k = torch.tensor([f.k_input_ids for f in features], dtype=torch.long)
+    all_k_mask = torch.tensor([f.k_mask for f in features], dtype=torch.long)
+    all_input_mask_k = torch.tensor([f.k_input_mask for f in features], dtype=torch.long)
+    all_segment_ids_k = torch.tensor([f.k_segment_ids for f in features], dtype=torch.long)
+    all_entities = torch.tensor([f.entities for f in features], dtype=torch.long)
 
-        if args.task_name in ['openentity', 'figer']:
-            all_label_ids = torch.tensor([f.label_id for f in features], dtype=torch.float)
-        else:
-            all_label_ids = torch.tensor([f.label_id for f in features], dtype=torch.long)
-        # elif output_mode == "regression":
-        #     all_label_ids = torch.tensor([f.label_id for f in features], dtype=torch.float)
-        if args.task_name in ['fewrel', 'tacred', 'openentity', 'figer']:
-            all_start_ids = torch.tensor([f.start_id for f in features], dtype=torch.float)
-            dataset = TensorDataset(all_input_ids, all_input_mask, all_segment_ids, all_start_ids,
-                                    all_input_ids_k, all_k_mask, all_input_mask_k, all_segment_ids_k,
-                                    all_label_ids)
-        else:
-            dataset = TensorDataset(all_input_ids, all_input_mask, all_segment_ids,
-                                    all_input_ids_k, all_k_mask, all_input_mask_k, all_segment_ids_k,
-                                    all_label_ids)
+    if args.task_name in ['openentity', 'figer']:
+        all_label_ids = torch.tensor([f.label_id for f in features], dtype=torch.float)
     else:
-        all_input_ids = features.input_ids
-        all_input_mask = features.input_mask
-        all_segment_ids = features.segment_ids
-        all_start_ids = features.start_id
+        all_label_ids = torch.tensor([f.label_id for f in features], dtype=torch.long)
 
-        all_input_ids_k = features.k_input_ids
-        all_input_mask_k = features.k_input_mask
-        all_segment_ids_k = features.k_segment_ids
-
-        all_label_ids = features.label_id
-
+    if args.task_name in ['fewrel', 'tacred', 'openentity', 'figer']:
+        all_start_ids = torch.tensor([f.start_id for f in features], dtype=torch.float)
         dataset = TensorDataset(all_input_ids, all_input_mask, all_segment_ids, all_start_ids,
                                 all_input_ids_k, all_k_mask, all_input_mask_k, all_segment_ids_k,
-                                all_label_ids)
+                                all_label_ids, all_entities)
+    else:
+        dataset = TensorDataset(all_input_ids, all_input_mask, all_segment_ids,
+                                all_input_ids_k, all_k_mask, all_input_mask_k, all_segment_ids_k,
+                                all_label_ids, all_entities)
+
     return dataset
 
 
@@ -194,10 +134,6 @@ def _truncate_seq_pair(tokens_a, tokens_b, max_length):
 def convert_examples_to_features_sentence_pair(examples, origin_seq_length, knowledge_seq_length, max_num_entity,
                                                tokenizer, k_tokenizer,
                                                pad_on_left=False,
-                                               pad_token=0,
-                                               pad_token_segment_id=0,
-                                               sequence_a_segment_id=0,
-                                               sequence_b_segment_id=1,
                                                mask_padding_with_zero=True):
 
     max_num_tokens = origin_seq_length - tokenizer.num_special_tokens_to_add(pair=True)  # 32 - 3
@@ -221,18 +157,18 @@ def convert_examples_to_features_sentence_pair(examples, origin_seq_length, know
 
         padding_length = origin_seq_length - len(input_ids)
         if pad_on_left:
-            input_ids = ([pad_token] * padding_length) + input_ids
+            input_ids = ([tokenizer.pad_token_id] * padding_length) + input_ids
             input_mask = ([0 if mask_padding_with_zero else 1] * padding_length) + input_mask
-            segment_ids = ([pad_token_segment_id] * padding_length) + segment_ids
+            segment_ids = ([tokenizer.pad_token_type_id] * padding_length) + segment_ids
         else:
-            input_ids = input_ids + ([pad_token] * padding_length)
+            input_ids = input_ids + ([tokenizer.pad_token_id] * padding_length)
             input_mask = input_mask + ([0 if mask_padding_with_zero else 1] * padding_length)
-            segment_ids = segment_ids + ([pad_token_segment_id] * padding_length)
+            segment_ids = segment_ids + ([tokenizer.pad_token_type_id] * padding_length)
         assert len(input_ids) == origin_seq_length
         assert len(input_mask) == origin_seq_length
         assert len(segment_ids) == origin_seq_length
         if ex_index < 5:
-            logger.info("*** Example ***")
+            logger.info("*** ===> Example ***")
             logger.info("guid: %s" % (example.guid))
             logger.info("input_ids: %s" % " ".join([str(x) for x in input_ids]))
             logger.info("input_mask: %s" % " ".join([str(x) for x in input_mask]))
@@ -291,23 +227,13 @@ def convert_examples_to_features_sentence_pair(examples, origin_seq_length, know
     return features
 
 
-def convert_examples_to_features_single_sentence(examples, label_map, qid_file,
+def convert_examples_to_features_single_sentence(examples, qid_file,
                                                  origin_seq_length, knowledge_seq_length, max_num_entity,
-                                                tokenizer, k_tokenizer, output_mode, input_mode,
-                                                cls_token_at_end=False,
-                                                cls_token='[CLS]',
-                                                cls_token_segment_id=1,
-                                                sep_token='[SEP]',
-                                                sep_token_extra=False,
+                                                tokenizer, k_tokenizer,
                                                 pad_on_left=False,
-                                                pad_token=0,
-                                                pad_token_segment_id=0,
-                                                sequence_a_segment_id=0,
-                                                sequence_b_segment_id=1,
                                                 mask_padding_with_zero=True):
 
     QID_entityName_dict, QID_description_dict = load_description(qid_file)
-    # label_map = {label: i for i, label in enumerate(label_list)}
     features = []
     for (ex_index, example) in enumerate(examples):
         if ex_index % 10000 == 0:
@@ -324,23 +250,23 @@ def convert_examples_to_features_single_sentence(examples, label_map, qid_file,
         ### ==== append entity ===
         tokens = tokenizer.tokenize(text_a)
 
-        tokens = [cls_token] + tokens + [sep_token]
+        tokens = [tokenizer.cls_token] + tokens + [tokenizer.sep_token]
         tokens = tokens[: origin_seq_length]
 
-        segment_ids = [sequence_a_segment_id] * len(tokens)
+        segment_ids = [tokenizer.segment_id] * len(tokens)
         input_ids = tokenizer.convert_tokens_to_ids(tokens)
         input_mask = [1 if mask_padding_with_zero else 0] * len(input_ids)
 
         # Zero-pad up to the sequence length.
         padding_length = origin_seq_length - len(input_ids)
         if pad_on_left:
-            input_ids = ([pad_token] * padding_length) + input_ids
+            input_ids = ([tokenizer.pad_token] * padding_length) + input_ids
             input_mask = ([0 if mask_padding_with_zero else 1] * padding_length) + input_mask
-            segment_ids = ([pad_token_segment_id] * padding_length) + segment_ids
+            segment_ids = ([tokenizer.pad_token_segment_id] * padding_length) + segment_ids
         else:
-            input_ids = input_ids + ([pad_token] * padding_length)
+            input_ids = input_ids + ([tokenizer.pad_token] * padding_length)
             input_mask = input_mask + ([0 if mask_padding_with_zero else 1] * padding_length)
-            segment_ids = segment_ids + ([pad_token_segment_id] * padding_length)
+            segment_ids = segment_ids + ([tokenizer.pad_token_segment_id] * padding_length)
         assert len(input_ids) == origin_seq_length
         assert len(input_mask) == origin_seq_length
         assert len(segment_ids) == origin_seq_length
@@ -413,28 +339,24 @@ def convert_examples_to_features_single_sentence(examples, label_map, qid_file,
     return features
 
 
-def convert_examples_to_features_relation_classification(examples, label_list, qid_file,
+def convert_examples_to_features_relation_classification(args, examples,
                                                          origin_seq_length, knowledge_seq_length, max_num_entity,
-                                        tokenizer, k_tokenizer, output_mode, input_mode,
-                                        cls_token_at_end=False,
-                                        cls_token='[CLS]',
-                                        cls_token_segment_id=1,
-                                        sep_token='[SEP]',
-                                        sep_token_extra=False,
-                                        pad_on_left=False,
-                                        pad_token=0,
-                                        pad_token_segment_id=0,
-                                        sequence_a_segment_id=0,
-                                        sequence_b_segment_id=1,
-                                        mask_padding_with_zero=True):
+                                                        tokenizer, k_tokenizer,
+                                                        pad_on_left=False,
+                                                        mask_padding_with_zero=True):
 
-    QID_entityName_dict, QID_description_dict = load_description(qid_file)
+    QID_entityName_dict, QID_description_dict = load_description(args.qid_file)
+    entity_vocab = get_entity_vocab(args.entity_vocab_file)
+
     features = []
     for (ex_index, example) in enumerate(examples):
         if ex_index % 10000 == 0:
             logger.info("Writing example %d of %d" % (ex_index, len(examples)))
         # ==== backbone ====
         neighbours = [x[0] for x in example.neighbour]
+
+        entities = [entity_vocab.get(qid, len(entity_vocab)) for qid in neighbours]
+        entities = entities[: max_num_entity] + [len(entity_vocab)] * (max_num_entity - len(entities))
 
         text_a = example.text_a
         subj_start, subj_end, obj_start, obj_end = example.text_b
@@ -476,19 +398,13 @@ def convert_examples_to_features_relation_classification(examples, label_list, q
             after_sub = text_a[subj_end + 1:].strip()
             tokens += tokenizer.tokenize(after_sub)
 
-        tokens = [cls_token] + tokens + [sep_token]
+        tokens = [tokenizer.cls_token] + tokens + [tokenizer.sep_token]
         tokens = tokens[: origin_seq_length]
 
         subj_special_start += 1 # because of cls_token
         obj_special_start += 1
-        # 下面有关于start，end超过最长长度时的处理
-        # if subj_special_start > origin_seq_length:
-        #     subj_special_start = 0
-        # if obj_special_start > origin_seq_length:
-        #     obj_special_start = 0
-        # relation = label_map[example.label]
 
-        segment_ids = [sequence_a_segment_id] * len(tokens)
+        segment_ids = [0] * len(tokens)
         input_ids = tokenizer.convert_tokens_to_ids(tokens)
         # The mask has 1 for real tokens and 0 for padding tokens. Only real
         # tokens are attended to.
@@ -497,13 +413,13 @@ def convert_examples_to_features_relation_classification(examples, label_list, q
         # Zero-pad up to the sequence length.
         padding_length = origin_seq_length - len(input_ids)
         if pad_on_left:
-            input_ids = ([pad_token] * padding_length) + input_ids
+            input_ids = ([tokenizer.pad_token_id] * padding_length) + input_ids
             input_mask = ([0 if mask_padding_with_zero else 1] * padding_length) + input_mask
-            segment_ids = ([pad_token_segment_id] * padding_length) + segment_ids
+            segment_ids = ([tokenizer.pad_token_type_id] * padding_length) + segment_ids
         else:
-            input_ids = input_ids + ([pad_token] * padding_length)
+            input_ids = input_ids + ([tokenizer.pad_token_id] * padding_length)
             input_mask = input_mask + ([0 if mask_padding_with_zero else 1] * padding_length)
-            segment_ids = segment_ids + ([pad_token_segment_id] * padding_length)
+            segment_ids = segment_ids + ([tokenizer.pad_token_type_id] * padding_length)
         assert len(input_ids) == origin_seq_length
         assert len(input_mask) == origin_seq_length
         assert len(segment_ids) == origin_seq_length
@@ -567,6 +483,7 @@ def convert_examples_to_features_relation_classification(examples, label_list, q
             logger.info("input_ids_k: %s" % " ".join([str(x) for x in neighbour_one]))
             logger.info("input_mask_k: %s" % " ".join([str(x) for x in neighbour_att_mask_one]))
             logger.info("segment_ids_k: %s" % " ".join([str(x) for x in neighbour_segment_one]))
+            logger.info("entities: %s" % " ".join([str(x) for x in entities]))
         # ==== knowledge ====
 
         features.append(
@@ -579,26 +496,18 @@ def convert_examples_to_features_relation_classification(examples, label_list, q
                           k_mask=neighbours_mask,  # 表示有几条有效description
                           k_input_mask=neighbour_att_mask_one,
                           k_segment_ids=neighbour_segment_one,  # distilBert没有使用token_type_embedding
+                          entities=entities
                           ))
 
     return features
 
 
-def convert_examples_to_features_entity_typing(examples, qid_file, origin_seq_length, knowledge_seq_length, max_num_entity,
-                                               tokenizer, k_tokenizer, output_mode, input_mode,
-                                               cls_token_at_end=False,
-                                               cls_token='[CLS]',
-                                               cls_token_segment_id=1,
-                                               sep_token='[SEP]',
-                                               sep_token_extra=False,
+def convert_examples_to_features_entity_typing(args, examples, origin_seq_length, knowledge_seq_length, max_num_entity,
+                                               tokenizer, k_tokenizer,
                                                pad_on_left=False,
-                                               pad_token=0,
-                                               pad_token_segment_id=0,
-                                               sequence_a_segment_id=0,
-                                               sequence_b_segment_id=1,
                                                mask_padding_with_zero=True):
-    # label_map = {label: i for i, label in enumerate(label_list)}
-    QID_entityName_dict, QID_description_dict = load_description(qid_file)
+    QID_entityName_dict, QID_description_dict = load_description(args.qid_file)
+    entity_vocab = get_entity_vocab(args.entity_vocab_file)
     features = []
     for (ex_index, example) in enumerate(examples):
         if ex_index % 10000 == 0:
@@ -606,11 +515,12 @@ def convert_examples_to_features_entity_typing(examples, qid_file, origin_seq_le
         # ==== backbone ====
         neighbours = [x[0] for x in example.neighbour]
         # === 在original input text后面拼上entities
-        # NULL_entity = "NULL entity"
-        # entities = [QID_entityName_dict.get(qid, NULL_entity) for qid in neighbours]
-        # entities = entities[: max_num_entity] + ["PAD ENTITY"] * (max_num_entity - len(entities))
-        # t = ' ' + sep_token + ' '
-        # example.text_a = t.join([example.text_a] + entities)
+        # if args.use_entity:
+            # NULL_entity = "NULL entity"
+        entities = [entity_vocab.get(qid, len(entity_vocab)) for qid in neighbours]
+        entities = entities[: max_num_entity] + [len(entity_vocab)] * (max_num_entity - len(entities))
+            # t = ' ' + tokenizer.sep_token + ' '
+            # example.text_a = t.join([example.text_a] + entities)
         # === 在original input text后面拼上entities
 
         start, end = example.text_b[0], example.text_b[1]
@@ -618,35 +528,31 @@ def convert_examples_to_features_entity_typing(examples, qid_file, origin_seq_le
         tokens_0_start = tokenizer.tokenize(sentence[:start])
         tokens_start_end = tokenizer.tokenize(sentence[start:end])
         tokens_end_last = tokenizer.tokenize(sentence[end:])
-        tokens = [cls_token] + tokens_0_start + tokenizer.tokenize('@') + tokens_start_end + tokenizer.tokenize(
-            '@') + tokens_end_last + [sep_token]
+        tokens = [tokenizer.cls_token] + tokens_0_start + tokenizer.tokenize('@') + tokens_start_end + tokenizer.tokenize(
+            '@') + tokens_end_last + [tokenizer.sep_token]
         tokens = tokens[: origin_seq_length]
         start = 1 + len(tokens_0_start)
         if start > origin_seq_length:
             continue
         end = 1 + len(tokens_0_start) + 1 + len(tokens_start_end)
-        segment_ids = [sequence_a_segment_id] * len(tokens)
+        segment_ids = [0] * len(tokens)
         input_ids = tokenizer.convert_tokens_to_ids(tokens)
         input_mask = [1 if mask_padding_with_zero else 0] * len(input_ids)
         padding_length = origin_seq_length - len(input_ids)
         if pad_on_left:
-            input_ids = ([pad_token] * padding_length) + input_ids
+            input_ids = ([tokenizer.pad_token_id] * padding_length) + input_ids
             input_mask = ([0 if mask_padding_with_zero else 1] * padding_length) + input_mask
-            segment_ids = ([pad_token_segment_id] * padding_length) + segment_ids
+            segment_ids = ([tokenizer.pad_token_type_id] * padding_length) + segment_ids
         else:
-            input_ids = input_ids + ([pad_token] * padding_length)
+            input_ids = input_ids + ([tokenizer.pad_token_id] * padding_length)
             input_mask = input_mask + ([0 if mask_padding_with_zero else 1] * padding_length)
-            segment_ids = segment_ids + ([pad_token_segment_id] * padding_length)
+            segment_ids = segment_ids + ([tokenizer.pad_token_type_id] * padding_length)
         assert len(input_ids) == origin_seq_length
         assert len(input_mask) == origin_seq_length
         assert len(segment_ids) == origin_seq_length
 
-        if output_mode == "classification":
-            label_id = example.label
-        elif output_mode == "regression":
-            label_id = float(example.label)
-        else:
-            raise KeyError(output_mode)
+
+        label_id = example.label
 
         start_id = np.zeros(origin_seq_length)
         if start >= origin_seq_length:
@@ -698,6 +604,7 @@ def convert_examples_to_features_entity_typing(examples, qid_file, origin_seq_le
             logger.info("input_ids_k: %s" % " ".join([str(x) for x in neighbour_one]))
             logger.info("input_mask_k: %s" % " ".join([str(x) for x in neighbour_att_mask_one]))
             logger.info("segment_ids_k: %s" % " ".join([str(x) for x in neighbour_segment_one]))
+            logger.info("entities: %s" % " ".join([str(x) for x in entities]))
         # ==== knowledge ====
 
         features.append(
@@ -710,6 +617,7 @@ def convert_examples_to_features_entity_typing(examples, qid_file, origin_seq_le
                           k_mask=neighbours_mask,  # 表示有几条有效description
                           k_input_mask=neighbour_att_mask_one,
                           k_segment_ids=neighbour_segment_one,  # distilBert没有使用token_type_embedding
+                          entities=entities,
                           ))
     return features
 
@@ -718,7 +626,7 @@ def convert_examples_to_features_entity_typing(examples, qid_file, origin_seq_le
 class InputFeatures(object):
     def __init__(self, input_ids=None, input_mask=None, segment_ids=None,
                  start_id=None,
-                 k_input_ids=None, k_mask=None, k_input_mask=None, k_segment_ids=None, label_id=None):
+                 k_input_ids=None, k_mask=None, k_input_mask=None, k_segment_ids=None, label_id=None, entities=None):
         self.input_ids = input_ids
         self.input_mask = input_mask
         self.segment_ids = segment_ids
@@ -728,6 +636,7 @@ class InputFeatures(object):
         self.k_mask = k_mask
         self.k_input_mask = k_input_mask
         self.k_segment_ids = k_segment_ids
+        self.entities = entities
 
         self.label_id = label_id
 
@@ -1058,7 +967,14 @@ def load_description(file):
             QID_description_dict[qid] = des
     return QID_entityName_dict, QID_description_dict
 
-
+def get_entity_vocab(file):
+    entity_list = []
+    with open(file, encoding='utf-8') as f:
+        for line in f:
+            entity = line.strip('\n')
+            entity_list.append(entity)
+    label_set = dict(zip(entity_list, list(range(len(entity_list)))))  # 1.3m
+    return label_set
 
 processors = {
     "sst2": Sst2Processor,
