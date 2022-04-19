@@ -334,23 +334,26 @@ def main():
 
     # word embedding
     args.model_config.vocab_size += 1
-    word_emb = model_weights["embeddings.word_embeddings.weight"]  # 50265*768
+    word_emb = model_weights["luke.embeddings.word_embeddings.weight"]  # 50265*768
     marker_emb = word_emb[tokenizer.convert_tokens_to_ids(["@"])[0]].unsqueeze(0)  # 1*768
-    model_weights["embeddings.word_embeddings.weight"] = torch.cat([word_emb, marker_emb])  # 后面拼一个marker_emb
+    model_weights["luke.embeddings.word_embeddings.weight"] = torch.cat([word_emb, marker_emb])  # 后面拼一个marker_emb
     tokenizer.add_special_tokens(dict(additional_special_tokens=[ENTITY_TOKEN]))
     # entity embedding
 
-    entity_emb = model_weights["entity_embeddings.entity_embeddings.weight"]  # 50W*256
+    entity_emb = model_weights["luke.entity_embeddings.entity_embeddings.weight"]  # 50W*256
     args.entity_vocab = model_archive.entity_vocab
     mask_emb = entity_emb[args.entity_vocab[MASK_TOKEN]].unsqueeze(0)  # 1*256
     args.model_config.entity_vocab_size = 2
-    model_weights["entity_embeddings.entity_embeddings.weight"] = torch.cat([entity_emb[:1], mask_emb])  # 2*256?
+    model_weights["luke.entity_embeddings.entity_embeddings.weight"] = torch.cat([entity_emb[:1], mask_emb])  # 2*256?
 
     # load model
     from data_utils import DatasetProcessor
     processor = DatasetProcessor()
     label_list = processor.get_label_list(args.data_dir)  # 9
     model = LukeForEntityTyping(args, num_labels=len(label_list))
+
+    # for k, v in model.named_parameters():
+    #     print(k)
 
     model.load_state_dict(model_weights, strict=False)
     model.to(args.device)
