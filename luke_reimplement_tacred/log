@@ -1,0 +1,909 @@
+comet_ml is installed but `COMET_API_KEY` is not set.
+INFO:__main__:Process rank: -1, device: cuda, n_gpu: 1, distributed training: False, 16-bits training: False
+INFO:data_utils:Creating features from the dataset...
+  0%|          | 0/22631 [00:00<?, ?it/s]  1%|          | 130/22631 [00:00<00:17, 1296.60it/s]  1%|          | 268/22631 [00:00<00:16, 1345.29it/s]  2%|▏         | 418/22631 [00:00<00:15, 1413.75it/s]  3%|▎         | 573/22631 [00:00<00:15, 1464.88it/s]  3%|▎         | 720/22631 [00:00<00:15, 1390.75it/s]  4%|▍         | 860/22631 [00:00<00:15, 1377.26it/s]  4%|▍         | 1004/22631 [00:00<00:15, 1394.05it/s]  5%|▌         | 1144/22631 [00:00<00:15, 1393.15it/s]  6%|▌         | 1284/22631 [00:00<00:15, 1369.57it/s]  6%|▋         | 1422/22631 [00:01<00:15, 1331.11it/s]  7%|▋         | 1556/22631 [00:01<00:15, 1321.00it/s]  7%|▋         | 1689/22631 [00:01<00:16, 1281.08it/s]  8%|▊         | 1818/22631 [00:01<00:16, 1276.27it/s]  9%|▊         | 1946/22631 [00:01<00:16, 1267.09it/s]  9%|▉         | 2074/22631 [00:01<00:16, 1269.04it/s] 10%|▉         | 2201/22631 [00:01<00:16, 1259.35it/s] 10%|█         | 2327/22631 [00:01<00:16, 1243.40it/s] 11%|█         | 2452/22631 [00:01<00:16, 1237.51it/s] 11%|█▏        | 2582/22631 [00:01<00:15, 1253.91it/s] 12%|█▏        | 2710/22631 [00:02<00:15, 1260.56it/s] 13%|█▎        | 2837/22631 [00:02<00:15, 1258.11it/s] 13%|█▎        | 2963/22631 [00:02<00:16, 1191.12it/s] 14%|█▎        | 3089/22631 [00:02<00:16, 1210.12it/s] 14%|█▍        | 3212/22631 [00:02<00:15, 1215.26it/s] 15%|█▍        | 3338/22631 [00:02<00:15, 1226.35it/s] 15%|█▌        | 3466/22631 [00:02<00:15, 1240.72it/s] 16%|█▌        | 3593/22631 [00:02<00:15, 1247.86it/s] 16%|█▋        | 3718/22631 [00:02<00:15, 1243.53it/s] 17%|█▋        | 3843/22631 [00:02<00:15, 1235.15it/s] 18%|█▊        | 3967/22631 [00:03<00:15, 1232.93it/s] 18%|█▊        | 4094/22631 [00:03<00:14, 1242.25it/s] 19%|█▊        | 4219/22631 [00:03<00:14, 1235.01it/s] 19%|█▉        | 4343/22631 [00:03<00:14, 1232.58it/s] 20%|█▉        | 4467/22631 [00:03<00:14, 1211.69it/s] 20%|██        | 4594/22631 [00:03<00:14, 1227.57it/s] 21%|██        | 4719/22631 [00:03<00:14, 1233.76it/s] 21%|██▏       | 4846/22631 [00:03<00:14, 1242.97it/s] 22%|██▏       | 4977/22631 [00:03<00:13, 1261.98it/s] 23%|██▎       | 5104/22631 [00:04<00:14, 1239.18it/s] 23%|██▎       | 5229/22631 [00:04<00:14, 1242.27it/s] 24%|██▎       | 5357/22631 [00:04<00:13, 1252.24it/s] 24%|██▍       | 5483/22631 [00:04<00:14, 1198.06it/s] 25%|██▍       | 5605/22631 [00:04<00:14, 1204.12it/s] 25%|██▌       | 5726/22631 [00:04<00:14, 1202.60it/s] 26%|██▌       | 5853/22631 [00:04<00:13, 1222.11it/s] 26%|██▋       | 5977/22631 [00:04<00:13, 1224.86it/s] 27%|██▋       | 6105/22631 [00:04<00:13, 1240.17it/s] 28%|██▊       | 6230/22631 [00:04<00:13, 1235.42it/s] 28%|██▊       | 6356/22631 [00:05<00:13, 1242.10it/s] 29%|██▊       | 6482/22631 [00:05<00:12, 1245.07it/s] 29%|██▉       | 6612/22631 [00:05<00:12, 1260.88it/s] 30%|██▉       | 6741/22631 [00:05<00:12, 1268.55it/s] 30%|███       | 6868/22631 [00:05<00:12, 1245.30it/s] 31%|███       | 6993/22631 [00:05<00:12, 1233.60it/s] 31%|███▏      | 7121/22631 [00:05<00:12, 1246.34it/s] 32%|███▏      | 7247/22631 [00:05<00:12, 1249.45it/s] 33%|███▎      | 7374/22631 [00:05<00:12, 1254.64it/s] 33%|███▎      | 7500/22631 [00:05<00:12, 1242.20it/s] 34%|███▎      | 7625/22631 [00:06<00:12, 1242.07it/s] 34%|███▍      | 7750/22631 [00:06<00:12, 1231.34it/s] 35%|███▍      | 7878/22631 [00:06<00:11, 1245.70it/s] 35%|███▌      | 8007/22631 [00:06<00:11, 1256.32it/s] 36%|███▌      | 8136/22631 [00:06<00:11, 1264.65it/s] 37%|███▋      | 8263/22631 [00:06<00:11, 1260.72it/s] 37%|███▋      | 8390/22631 [00:06<00:11, 1245.81it/s] 38%|███▊      | 8515/22631 [00:06<00:11, 1229.05it/s] 38%|███▊      | 8641/22631 [00:06<00:11, 1236.94it/s] 39%|███▊      | 8765/22631 [00:06<00:11, 1180.62it/s] 39%|███▉      | 8890/22631 [00:07<00:11, 1200.37it/s] 40%|███▉      | 9011/22631 [00:07<00:18, 750.17it/s]  40%|████      | 9138/22631 [00:07<00:15, 856.92it/s] 41%|████      | 9256/22631 [00:07<00:14, 929.32it/s] 41%|████▏     | 9382/22631 [00:07<00:13, 1008.96it/s] 42%|████▏     | 9501/22631 [00:07<00:12, 1055.75it/s] 43%|████▎     | 9630/22631 [00:07<00:11, 1118.65it/s] 43%|████▎     | 9755/22631 [00:07<00:11, 1154.85it/s] 44%|████▎     | 9880/22631 [00:08<00:10, 1180.11it/s] 44%|████▍     | 10007/22631 [00:08<00:10, 1203.46it/s] 45%|████▍     | 10132/22631 [00:08<00:10, 1214.55it/s] 45%|████▌     | 10256/22631 [00:08<00:10, 1218.52it/s] 46%|████▌     | 10384/22631 [00:08<00:09, 1235.61it/s] 46%|████▋     | 10509/22631 [00:08<00:09, 1236.87it/s] 47%|████▋     | 10635/22631 [00:08<00:09, 1242.91it/s] 48%|████▊     | 10760/22631 [00:08<00:09, 1238.27it/s] 48%|████▊     | 10885/22631 [00:08<00:09, 1239.04it/s] 49%|████▊     | 11010/22631 [00:09<00:09, 1195.11it/s] 49%|████▉     | 11131/22631 [00:09<00:09, 1173.39it/s] 50%|████▉     | 11254/22631 [00:09<00:09, 1188.29it/s] 50%|█████     | 11378/22631 [00:09<00:09, 1203.28it/s] 51%|█████     | 11499/22631 [00:09<00:09, 1181.38it/s] 51%|█████▏    | 11627/22631 [00:09<00:09, 1209.31it/s] 52%|█████▏    | 11749/22631 [00:09<00:09, 1189.27it/s] 52%|█████▏    | 11869/22631 [00:09<00:09, 1190.42it/s] 53%|█████▎    | 11992/22631 [00:09<00:08, 1202.01it/s] 54%|█████▎    | 12120/22631 [00:09<00:08, 1222.55it/s] 54%|█████▍    | 12245/22631 [00:10<00:08, 1228.89it/s] 55%|█████▍    | 12370/22631 [00:10<00:08, 1232.38it/s] 55%|█████▌    | 12496/22631 [00:10<00:08, 1239.90it/s] 56%|█████▌    | 12623/22631 [00:10<00:08, 1247.54it/s] 56%|█████▋    | 12748/22631 [00:10<00:08, 1234.90it/s] 57%|█████▋    | 12875/22631 [00:10<00:07, 1243.60it/s] 57%|█████▋    | 13000/22631 [00:10<00:07, 1240.03it/s] 58%|█████▊    | 13125/22631 [00:10<00:07, 1236.15it/s] 59%|█████▊    | 13249/22631 [00:10<00:07, 1236.74it/s] 59%|█████▉    | 13374/22631 [00:10<00:07, 1238.96it/s] 60%|█████▉    | 13502/22631 [00:11<00:07, 1247.07it/s] 60%|██████    | 13628/22631 [00:11<00:07, 1248.62it/s] 61%|██████    | 13753/22631 [00:11<00:07, 1244.23it/s] 61%|██████▏   | 13878/22631 [00:11<00:07, 1242.27it/s] 62%|██████▏   | 14003/22631 [00:11<00:07, 1217.05it/s] 62%|██████▏   | 14127/22631 [00:11<00:06, 1219.45it/s] 63%|██████▎   | 14253/22631 [00:11<00:06, 1230.11it/s] 64%|██████▎   | 14383/22631 [00:11<00:06, 1249.55it/s] 64%|██████▍   | 14509/22631 [00:11<00:06, 1183.46it/s] 65%|██████▍   | 14633/22631 [00:11<00:06, 1197.42it/s] 65%|██████▌   | 14757/22631 [00:12<00:06, 1207.49it/s] 66%|██████▌   | 14881/22631 [00:12<00:06, 1215.00it/s] 66%|██████▋   | 15009/22631 [00:12<00:06, 1232.53it/s] 67%|██████▋   | 15135/22631 [00:12<00:06, 1238.24it/s] 67%|██████▋   | 15260/22631 [00:12<00:06, 1217.46it/s] 68%|██████▊   | 15385/22631 [00:12<00:05, 1224.52it/s] 69%|██████▊   | 15514/22631 [00:12<00:05, 1241.65it/s] 69%|██████▉   | 15643/22631 [00:12<00:05, 1253.27it/s] 70%|██████▉   | 15769/22631 [00:12<00:05, 1228.07it/s] 70%|███████   | 15898/22631 [00:12<00:05, 1243.71it/s] 71%|███████   | 16023/22631 [00:13<00:05, 1238.56it/s] 71%|███████▏  | 16148/22631 [00:13<00:05, 1238.80it/s] 72%|███████▏  | 16272/22631 [00:13<00:05, 1225.28it/s] 72%|███████▏  | 16401/22631 [00:13<00:05, 1240.33it/s] 73%|███████▎  | 16526/22631 [00:13<00:04, 1238.35it/s] 74%|███████▎  | 16650/22631 [00:13<00:05, 1185.31it/s] 74%|███████▍  | 16778/22631 [00:13<00:04, 1212.01it/s] 75%|███████▍  | 16903/22631 [00:13<00:04, 1223.07it/s] 75%|███████▌  | 17030/22631 [00:13<00:04, 1236.79it/s] 76%|███████▌  | 17156/22631 [00:14<00:04, 1241.05it/s] 76%|███████▋  | 17281/22631 [00:14<00:04, 1241.36it/s] 77%|███████▋  | 17407/22631 [00:14<00:04, 1244.66it/s] 77%|███████▋  | 17532/22631 [00:14<00:04, 1228.56it/s] 78%|███████▊  | 17655/22631 [00:14<00:04, 1220.40it/s] 79%|███████▊  | 17778/22631 [00:14<00:03, 1221.96it/s] 79%|███████▉  | 17901/22631 [00:14<00:03, 1220.86it/s] 80%|███████▉  | 18026/22631 [00:14<00:03, 1228.63it/s] 80%|████████  | 18149/22631 [00:14<00:03, 1215.23it/s] 81%|████████  | 18276/22631 [00:14<00:03, 1228.67it/s] 81%|████████▏ | 18400/22631 [00:15<00:03, 1230.40it/s] 82%|████████▏ | 18528/22631 [00:15<00:03, 1244.29it/s] 82%|████████▏ | 18653/22631 [00:15<00:03, 1241.40it/s] 83%|████████▎ | 18788/22631 [00:15<00:03, 1272.11it/s] 84%|████████▎ | 18920/22631 [00:15<00:02, 1285.56it/s] 84%|████████▍ | 19056/22631 [00:15<00:02, 1306.53it/s] 85%|████████▍ | 19188/22631 [00:15<00:02, 1309.82it/s] 85%|████████▌ | 19324/22631 [00:15<00:02, 1324.70it/s] 86%|████████▌ | 19457/22631 [00:15<00:02, 1319.72it/s] 87%|████████▋ | 19589/22631 [00:15<00:02, 1272.18it/s] 87%|████████▋ | 19717/22631 [00:16<00:02, 1223.13it/s] 88%|████████▊ | 19840/22631 [00:16<00:02, 1180.96it/s] 88%|████████▊ | 19963/22631 [00:16<00:02, 1193.35it/s] 89%|████████▉ | 20100/22631 [00:16<00:02, 1241.79it/s] 89%|████████▉ | 20225/22631 [00:16<00:01, 1218.72it/s] 90%|████████▉ | 20358/22631 [00:16<00:01, 1250.73it/s] 91%|█████████ | 20487/22631 [00:16<00:01, 1262.02it/s] 91%|█████████ | 20614/22631 [00:16<00:01, 1263.33it/s] 92%|█████████▏| 20751/22631 [00:16<00:01, 1293.91it/s] 92%|█████████▏| 20889/22631 [00:16<00:01, 1319.00it/s] 93%|█████████▎| 21027/22631 [00:17<00:01, 1335.45it/s] 94%|█████████▎| 21166/22631 [00:17<00:01, 1350.94it/s] 94%|█████████▍| 21302/22631 [00:17<00:00, 1346.62it/s] 95%|█████████▍| 21437/22631 [00:17<00:00, 1334.98it/s] 95%|█████████▌| 21571/22631 [00:17<00:00, 1298.87it/s] 96%|█████████▌| 21705/22631 [00:17<00:00, 1308.76it/s] 97%|█████████▋| 21843/22631 [00:17<00:00, 1327.38it/s] 97%|█████████▋| 21976/22631 [00:17<00:00, 1323.86it/s] 98%|█████████▊| 22109/22631 [00:17<00:00, 1276.31it/s] 98%|█████████▊| 22238/22631 [00:18<00:00, 1259.26it/s] 99%|█████████▉| 22365/22631 [00:18<00:00, 1246.39it/s] 99%|█████████▉| 22490/22631 [00:18<00:00, 1239.77it/s]100%|█████████▉| 22615/22631 [00:18<00:00, 1237.79it/s]100%|██████████| 22631/22631 [00:18<00:00, 1233.22it/s]
+  0%|          | 0/113155 [00:00<?, ?it/s]  0%|          | 0/113155 [01:43<?, ?it/s]
+0 tensor([29])
+tensor([29], device='cuda:0')
+1 tensor([29])
+tensor([29], device='cuda:0')
+2 tensor([29])
+tensor([29], device='cuda:0')
+3 tensor([29])
+tensor([29], device='cuda:0')
+4 tensor([29])
+tensor([29], device='cuda:0')
+5 tensor([29])
+tensor([29], device='cuda:0')
+6 tensor([29])
+tensor([29], device='cuda:0')
+7 tensor([29])
+tensor([29], device='cuda:0')
+8 tensor([29])
+tensor([29], device='cuda:0')
+9 tensor([36])
+tensor([36], device='cuda:0')
+10 tensor([29])
+tensor([29], device='cuda:0')
+11 tensor([29])
+tensor([29], device='cuda:0')
+12 tensor([29])
+tensor([29], device='cuda:0')
+13 tensor([29])
+tensor([29], device='cuda:0')
+14 tensor([9])
+tensor([9], device='cuda:0')
+15 tensor([29])
+tensor([29], device='cuda:0')
+16 tensor([29])
+tensor([29], device='cuda:0')
+17 tensor([12])
+tensor([12], device='cuda:0')
+18 tensor([29])
+tensor([29], device='cuda:0')
+19 tensor([1])
+tensor([1], device='cuda:0')
+20 tensor([5])
+tensor([5], device='cuda:0')
+21 tensor([41])
+tensor([41], device='cuda:0')
+22 tensor([29])
+tensor([29], device='cuda:0')
+23 tensor([29])
+tensor([29], device='cuda:0')
+24 tensor([29])
+tensor([29], device='cuda:0')
+25 tensor([24])
+tensor([24], device='cuda:0')
+26 tensor([29])
+tensor([29], device='cuda:0')
+27 tensor([29])
+tensor([29], device='cuda:0')
+28 tensor([1])
+tensor([1], device='cuda:0')
+29 tensor([29])
+tensor([29], device='cuda:0')
+30 tensor([29])
+tensor([29], device='cuda:0')
+31 tensor([24])
+tensor([24], device='cuda:0')
+32 tensor([29])
+tensor([29], device='cuda:0')
+33 tensor([29])
+tensor([29], device='cuda:0')
+34 tensor([29])
+tensor([29], device='cuda:0')
+35 tensor([29])
+tensor([29], device='cuda:0')
+36 tensor([29])
+tensor([29], device='cuda:0')
+37 tensor([29])
+tensor([29], device='cuda:0')
+38 tensor([6])
+tensor([6], device='cuda:0')
+39 tensor([29])
+tensor([29], device='cuda:0')
+40 tensor([27])
+tensor([27], device='cuda:0')
+41 tensor([29])
+tensor([29], device='cuda:0')
+42 tensor([29])
+tensor([29], device='cuda:0')
+43 tensor([29])
+tensor([29], device='cuda:0')
+44 tensor([29])
+tensor([29], device='cuda:0')
+45 tensor([29])
+tensor([29], device='cuda:0')
+46 tensor([29])
+tensor([29], device='cuda:0')
+47 tensor([29])
+tensor([29], device='cuda:0')
+48 tensor([29])
+tensor([29], device='cuda:0')
+49 tensor([12])
+tensor([12], device='cuda:0')
+50 tensor([29])
+tensor([29], device='cuda:0')
+51 tensor([29])
+tensor([29], device='cuda:0')
+52 tensor([29])
+tensor([29], device='cuda:0')
+53 tensor([29])
+tensor([29], device='cuda:0')
+54 tensor([29])
+tensor([29], device='cuda:0')
+55 tensor([29])
+tensor([29], device='cuda:0')
+56 tensor([29])
+tensor([29], device='cuda:0')
+57 tensor([12])
+tensor([12], device='cuda:0')
+58 tensor([29])
+tensor([29], device='cuda:0')
+59 tensor([29])
+tensor([29], device='cuda:0')
+60 tensor([24])
+tensor([24], device='cuda:0')
+61 tensor([29])
+tensor([29], device='cuda:0')
+62 tensor([29])
+tensor([29], device='cuda:0')
+63 tensor([41])
+tensor([41], device='cuda:0')
+64 tensor([12])
+tensor([12], device='cuda:0')
+65 tensor([29])
+tensor([29], device='cuda:0')
+66 tensor([29])
+tensor([29], device='cuda:0')
+67 tensor([29])
+tensor([29], device='cuda:0')
+68 tensor([29])
+tensor([29], device='cuda:0')
+69 tensor([1])
+tensor([1], device='cuda:0')
+70 tensor([29])
+tensor([29], device='cuda:0')
+71 tensor([29])
+tensor([29], device='cuda:0')
+72 tensor([29])
+tensor([29], device='cuda:0')
+73 tensor([12])
+tensor([12], device='cuda:0')
+74 tensor([29])
+tensor([29], device='cuda:0')
+75 tensor([29])
+tensor([29], device='cuda:0')
+76 tensor([24])
+tensor([24], device='cuda:0')
+77 tensor([29])
+tensor([29], device='cuda:0')
+78 tensor([2])
+tensor([2], device='cuda:0')
+79 tensor([29])
+tensor([29], device='cuda:0')
+80 tensor([29])
+tensor([29], device='cuda:0')
+81 tensor([24])
+tensor([24], device='cuda:0')
+82 tensor([29])
+tensor([29], device='cuda:0')
+83 tensor([5])
+tensor([5], device='cuda:0')
+84 tensor([29])
+tensor([29], device='cuda:0')
+85 tensor([29])
+tensor([29], device='cuda:0')
+86 tensor([29])
+tensor([29], device='cuda:0')
+87 tensor([29])
+tensor([29], device='cuda:0')
+88 tensor([29])
+tensor([29], device='cuda:0')
+89 tensor([29])
+tensor([29], device='cuda:0')
+90 tensor([29])
+tensor([29], device='cuda:0')
+91 tensor([29])
+tensor([29], device='cuda:0')
+92 tensor([5])
+tensor([5], device='cuda:0')
+93 tensor([29])
+tensor([29], device='cuda:0')
+94 tensor([29])
+tensor([29], device='cuda:0')
+95 tensor([29])
+tensor([29], device='cuda:0')
+96 tensor([29])
+tensor([29], device='cuda:0')
+97 tensor([29])
+tensor([29], device='cuda:0')
+98 tensor([29])
+tensor([29], device='cuda:0')
+99 tensor([29])
+tensor([29], device='cuda:0')
+100 tensor([29])
+tensor([29], device='cuda:0')
+101 tensor([29])
+tensor([29], device='cuda:0')
+102 tensor([29])
+tensor([29], device='cuda:0')
+103 tensor([29])
+tensor([29], device='cuda:0')
+104 tensor([10])
+tensor([10], device='cuda:0')
+105 tensor([29])
+tensor([29], device='cuda:0')
+106 tensor([29])
+tensor([29], device='cuda:0')
+107 tensor([12])
+tensor([12], device='cuda:0')
+108 tensor([23])
+tensor([23], device='cuda:0')
+109 tensor([29])
+tensor([29], device='cuda:0')
+110 tensor([2])
+tensor([2], device='cuda:0')
+111 tensor([29])
+tensor([29], device='cuda:0')
+112 tensor([29])
+tensor([29], device='cuda:0')
+113 tensor([29])
+tensor([29], device='cuda:0')
+114 tensor([29])
+tensor([29], device='cuda:0')
+115 tensor([29])
+tensor([29], device='cuda:0')
+116 tensor([36])
+tensor([36], device='cuda:0')
+117 tensor([12])
+tensor([12], device='cuda:0')
+118 tensor([29])
+tensor([29], device='cuda:0')
+119 tensor([9])
+tensor([9], device='cuda:0')
+120 tensor([29])
+tensor([29], device='cuda:0')
+121 tensor([41])
+tensor([41], device='cuda:0')
+122 tensor([9])
+tensor([9], device='cuda:0')
+123 tensor([9])
+tensor([9], device='cuda:0')
+124 tensor([29])
+tensor([29], device='cuda:0')
+125 tensor([29])
+tensor([29], device='cuda:0')
+126 tensor([29])
+tensor([29], device='cuda:0')
+127 tensor([10])
+tensor([10], device='cuda:0')
+128 tensor([29])
+tensor([29], device='cuda:0')
+129 tensor([29])
+tensor([29], device='cuda:0')
+130 tensor([29])
+tensor([29], device='cuda:0')
+131 tensor([6])
+tensor([6], device='cuda:0')
+132 tensor([29])
+tensor([29], device='cuda:0')
+133 tensor([29])
+tensor([29], device='cuda:0')
+134 tensor([29])
+tensor([29], device='cuda:0')
+135 tensor([29])
+tensor([29], device='cuda:0')
+136 tensor([29])
+tensor([29], device='cuda:0')
+137 tensor([29])
+tensor([29], device='cuda:0')
+138 tensor([12])
+tensor([12], device='cuda:0')
+139 tensor([0])
+tensor([0], device='cuda:0')
+140 tensor([29])
+tensor([29], device='cuda:0')
+141 tensor([29])
+tensor([29], device='cuda:0')
+142 tensor([29])
+tensor([29], device='cuda:0')
+143 tensor([29])
+tensor([29], device='cuda:0')
+144 tensor([29])
+tensor([29], device='cuda:0')
+145 tensor([29])
+tensor([29], device='cuda:0')
+146 tensor([37])
+tensor([37], device='cuda:0')
+147 tensor([1])
+tensor([1], device='cuda:0')
+148 tensor([29])
+tensor([29], device='cuda:0')
+149 tensor([29])
+tensor([29], device='cuda:0')
+150 tensor([29])
+tensor([29], device='cuda:0')
+151 tensor([29])
+tensor([29], device='cuda:0')
+152 tensor([23])
+tensor([23], device='cuda:0')
+153 tensor([29])
+tensor([29], device='cuda:0')
+154 tensor([29])
+tensor([29], device='cuda:0')
+155 tensor([29])
+tensor([29], device='cuda:0')
+156 tensor([29])
+tensor([29], device='cuda:0')
+157 tensor([29])
+tensor([29], device='cuda:0')
+158 tensor([29])
+tensor([29], device='cuda:0')
+159 tensor([29])
+tensor([29], device='cuda:0')
+160 tensor([29])
+tensor([29], device='cuda:0')
+161 tensor([1])
+tensor([1], device='cuda:0')
+162 tensor([2])
+tensor([2], device='cuda:0')
+163 tensor([29])
+tensor([29], device='cuda:0')
+164 tensor([29])
+tensor([29], device='cuda:0')
+165 tensor([21])
+tensor([21], device='cuda:0')
+166 tensor([10])
+tensor([10], device='cuda:0')
+167 tensor([29])
+tensor([29], device='cuda:0')
+168 tensor([12])
+tensor([12], device='cuda:0')
+169 tensor([30])
+tensor([30], device='cuda:0')
+170 tensor([29])
+tensor([29], device='cuda:0')
+171 tensor([29])
+tensor([29], device='cuda:0')
+172 tensor([29])
+tensor([29], device='cuda:0')
+173 tensor([5])
+tensor([5], device='cuda:0')
+174 tensor([31])
+tensor([31], device='cuda:0')
+175 tensor([29])
+tensor([29], device='cuda:0')
+176 tensor([29])
+tensor([29], device='cuda:0')
+177 tensor([1])
+tensor([1], device='cuda:0')
+178 tensor([29])
+tensor([29], device='cuda:0')
+179 tensor([29])
+tensor([29], device='cuda:0')
+180 tensor([2])
+tensor([2], device='cuda:0')
+181 tensor([29])
+tensor([29], device='cuda:0')
+182 tensor([29])
+tensor([29], device='cuda:0')
+183 tensor([29])
+tensor([29], device='cuda:0')
+184 tensor([29])
+tensor([29], device='cuda:0')
+185 tensor([29])
+tensor([29], device='cuda:0')
+186 tensor([29])
+tensor([29], device='cuda:0')
+187 tensor([29])
+tensor([29], device='cuda:0')
+188 tensor([29])
+tensor([29], device='cuda:0')
+189 tensor([29])
+tensor([29], device='cuda:0')
+190 tensor([29])
+tensor([29], device='cuda:0')
+191 tensor([6])
+tensor([6], device='cuda:0')
+192 tensor([29])
+tensor([29], device='cuda:0')
+193 tensor([6])
+tensor([6], device='cuda:0')
+194 tensor([29])
+tensor([29], device='cuda:0')
+195 tensor([29])
+tensor([29], device='cuda:0')
+196 tensor([29])
+tensor([29], device='cuda:0')
+197 tensor([24])
+tensor([24], device='cuda:0')
+198 tensor([29])
+tensor([29], device='cuda:0')
+199 tensor([29])
+tensor([29], device='cuda:0')
+200 tensor([24])
+tensor([24], device='cuda:0')
+201 tensor([12])
+tensor([12], device='cuda:0')
+202 tensor([29])
+tensor([29], device='cuda:0')
+203 tensor([1])
+tensor([1], device='cuda:0')
+204 tensor([29])
+tensor([29], device='cuda:0')
+205 tensor([29])
+tensor([29], device='cuda:0')
+206 tensor([29])
+tensor([29], device='cuda:0')
+207 tensor([0])
+tensor([0], device='cuda:0')
+208 tensor([6])
+tensor([6], device='cuda:0')
+209 tensor([11])
+tensor([11], device='cuda:0')
+210 tensor([29])
+tensor([29], device='cuda:0')
+211 tensor([29])
+tensor([29], device='cuda:0')
+212 tensor([29])
+tensor([29], device='cuda:0')
+213 tensor([29])
+tensor([29], device='cuda:0')
+214 tensor([29])
+tensor([29], device='cuda:0')
+215 tensor([29])
+tensor([29], device='cuda:0')
+216 tensor([12])
+tensor([12], device='cuda:0')
+217 tensor([29])
+tensor([29], device='cuda:0')
+218 tensor([2])
+tensor([2], device='cuda:0')
+219 tensor([6])
+tensor([6], device='cuda:0')
+220 tensor([29])
+tensor([29], device='cuda:0')
+221 tensor([29])
+tensor([29], device='cuda:0')
+222 tensor([29])
+tensor([29], device='cuda:0')
+223 tensor([29])
+tensor([29], device='cuda:0')
+224 tensor([29])
+tensor([29], device='cuda:0')
+225 tensor([13])
+tensor([13], device='cuda:0')
+226 tensor([29])
+tensor([29], device='cuda:0')
+227 tensor([29])
+tensor([29], device='cuda:0')
+228 tensor([29])
+tensor([29], device='cuda:0')
+229 tensor([29])
+tensor([29], device='cuda:0')
+230 tensor([24])
+tensor([24], device='cuda:0')
+231 tensor([29])
+tensor([29], device='cuda:0')
+232 tensor([26])
+tensor([26], device='cuda:0')
+233 tensor([36])
+tensor([36], device='cuda:0')
+234 tensor([29])
+tensor([29], device='cuda:0')
+235 tensor([29])
+tensor([29], device='cuda:0')
+236 tensor([29])
+tensor([29], device='cuda:0')
+237 tensor([29])
+tensor([29], device='cuda:0')
+238 tensor([29])
+tensor([29], device='cuda:0')
+239 tensor([29])
+tensor([29], device='cuda:0')
+240 tensor([5])
+tensor([5], device='cuda:0')
+241 tensor([10])
+tensor([10], device='cuda:0')
+242 tensor([15])
+tensor([15], device='cuda:0')
+243 tensor([27])
+tensor([27], device='cuda:0')
+244 tensor([19])
+tensor([19], device='cuda:0')
+245 tensor([29])
+tensor([29], device='cuda:0')
+246 tensor([9])
+tensor([9], device='cuda:0')
+247 tensor([12])
+tensor([12], device='cuda:0')
+248 tensor([1])
+tensor([1], device='cuda:0')
+249 tensor([23])
+tensor([23], device='cuda:0')
+250 tensor([6])
+tensor([6], device='cuda:0')
+251 tensor([29])
+tensor([29], device='cuda:0')
+252 tensor([29])
+tensor([29], device='cuda:0')
+253 tensor([29])
+tensor([29], device='cuda:0')
+254 tensor([6])
+tensor([6], device='cuda:0')
+255 tensor([29])
+tensor([29], device='cuda:0')
+256 tensor([31])
+tensor([31], device='cuda:0')
+257 tensor([12])
+tensor([12], device='cuda:0')
+258 tensor([29])
+tensor([29], device='cuda:0')
+259 tensor([29])
+tensor([29], device='cuda:0')
+260 tensor([4])
+tensor([4], device='cuda:0')
+261 tensor([29])
+tensor([29], device='cuda:0')
+262 tensor([29])
+tensor([29], device='cuda:0')
+263 tensor([29])
+tensor([29], device='cuda:0')
+264 tensor([29])
+tensor([29], device='cuda:0')
+265 tensor([29])
+tensor([29], device='cuda:0')
+266 tensor([20])
+tensor([20], device='cuda:0')
+267 tensor([22])
+tensor([22], device='cuda:0')
+268 tensor([29])
+tensor([29], device='cuda:0')
+269 tensor([29])
+tensor([29], device='cuda:0')
+270 tensor([29])
+tensor([29], device='cuda:0')
+271 tensor([29])
+tensor([29], device='cuda:0')
+272 tensor([29])
+tensor([29], device='cuda:0')
+273 tensor([29])
+tensor([29], device='cuda:0')
+274 tensor([29])
+tensor([29], device='cuda:0')
+275 tensor([29])
+tensor([29], device='cuda:0')
+276 tensor([29])
+tensor([29], device='cuda:0')
+277 tensor([29])
+tensor([29], device='cuda:0')
+278 tensor([29])
+tensor([29], device='cuda:0')
+279 tensor([29])
+tensor([29], device='cuda:0')
+280 tensor([29])
+tensor([29], device='cuda:0')
+281 tensor([29])
+tensor([29], device='cuda:0')
+282 tensor([29])
+tensor([29], device='cuda:0')
+283 tensor([26])
+tensor([26], device='cuda:0')
+284 tensor([29])
+tensor([29], device='cuda:0')
+285 tensor([29])
+tensor([29], device='cuda:0')
+286 tensor([27])
+tensor([27], device='cuda:0')
+287 tensor([29])
+tensor([29], device='cuda:0')
+288 tensor([29])
+tensor([29], device='cuda:0')
+289 tensor([29])
+tensor([29], device='cuda:0')
+290 tensor([12])
+tensor([12], device='cuda:0')
+291 tensor([12])
+tensor([12], device='cuda:0')
+292 tensor([31])
+tensor([31], device='cuda:0')
+293 tensor([29])
+tensor([29], device='cuda:0')
+294 tensor([31])
+tensor([31], device='cuda:0')
+295 tensor([12])
+tensor([12], device='cuda:0')
+296 tensor([29])
+tensor([29], device='cuda:0')
+297 tensor([29])
+tensor([29], device='cuda:0')
+298 tensor([29])
+tensor([29], device='cuda:0')
+299 tensor([29])
+tensor([29], device='cuda:0')
+300 tensor([29])
+tensor([29], device='cuda:0')
+301 tensor([29])
+tensor([29], device='cuda:0')
+302 tensor([41])
+tensor([41], device='cuda:0')
+303 tensor([29])
+tensor([29], device='cuda:0')
+304 tensor([24])
+tensor([24], device='cuda:0')
+305 tensor([29])
+tensor([29], device='cuda:0')
+306 tensor([29])
+tensor([29], device='cuda:0')
+307 tensor([29])
+tensor([29], device='cuda:0')
+308 tensor([29])
+tensor([29], device='cuda:0')
+309 tensor([29])
+tensor([29], device='cuda:0')
+310 tensor([11])
+tensor([11], device='cuda:0')
+311 tensor([24])
+tensor([24], device='cuda:0')
+312 tensor([29])
+tensor([29], device='cuda:0')
+313 tensor([29])
+tensor([29], device='cuda:0')
+314 tensor([12])
+tensor([12], device='cuda:0')
+315 tensor([29])
+tensor([29], device='cuda:0')
+316 tensor([30])
+tensor([30], device='cuda:0')
+317 tensor([29])
+tensor([29], device='cuda:0')
+318 tensor([29])
+tensor([29], device='cuda:0')
+319 tensor([29])
+tensor([29], device='cuda:0')
+320 tensor([29])
+tensor([29], device='cuda:0')
+321 tensor([29])
+tensor([29], device='cuda:0')
+322 tensor([29])
+tensor([29], device='cuda:0')
+323 tensor([29])
+tensor([29], device='cuda:0')
+324 tensor([29])
+tensor([29], device='cuda:0')
+325 tensor([8])
+tensor([8], device='cuda:0')
+326 tensor([29])
+tensor([29], device='cuda:0')
+327 tensor([29])
+tensor([29], device='cuda:0')
+328 tensor([29])
+tensor([29], device='cuda:0')
+329 tensor([29])
+tensor([29], device='cuda:0')
+330 tensor([29])
+tensor([29], device='cuda:0')
+331 tensor([29])
+tensor([29], device='cuda:0')
+332 tensor([29])
+tensor([29], device='cuda:0')
+333 tensor([29])
+tensor([29], device='cuda:0')
+334 tensor([29])
+tensor([29], device='cuda:0')
+335 tensor([6])
+tensor([6], device='cuda:0')
+336 tensor([29])
+tensor([29], device='cuda:0')
+337 tensor([29])
+tensor([29], device='cuda:0')
+338 tensor([29])
+tensor([29], device='cuda:0')
+339 tensor([29])
+tensor([29], device='cuda:0')
+340 tensor([29])
+tensor([29], device='cuda:0')
+341 tensor([21])
+tensor([21], device='cuda:0')
+342 tensor([29])
+tensor([29], device='cuda:0')
+343 tensor([29])
+tensor([29], device='cuda:0')
+344 tensor([29])
+tensor([29], device='cuda:0')
+345 tensor([29])
+tensor([29], device='cuda:0')
+346 tensor([29])
+tensor([29], device='cuda:0')
+347 tensor([29])
+tensor([29], device='cuda:0')
+348 tensor([29])
+tensor([29], device='cuda:0')
+349 tensor([29])
+tensor([29], device='cuda:0')
+350 tensor([29])
+tensor([29], device='cuda:0')
+351 tensor([29])
+tensor([29], device='cuda:0')
+352 tensor([29])
+tensor([29], device='cuda:0')
+353 tensor([29])
+tensor([29], device='cuda:0')
+354 tensor([29])
+tensor([29], device='cuda:0')
+355 tensor([41])
+tensor([41], device='cuda:0')
+356 tensor([29])
+tensor([29], device='cuda:0')
+357 tensor([5])
+tensor([5], device='cuda:0')
+358 tensor([29])
+tensor([29], device='cuda:0')
+359 tensor([29])
+tensor([29], device='cuda:0')
+360 tensor([29])
+tensor([29], device='cuda:0')
+361 tensor([29])
+tensor([29], device='cuda:0')
+362 tensor([29])
+tensor([29], device='cuda:0')
+363 tensor([29])
+tensor([29], device='cuda:0')
+364 tensor([29])
+tensor([29], device='cuda:0')
+365 tensor([29])
+tensor([29], device='cuda:0')
+366 tensor([1])
+tensor([1], device='cuda:0')
+367 tensor([9])
+tensor([9], device='cuda:0')
+368 tensor([29])
+tensor([29], device='cuda:0')
+369 tensor([29])
+tensor([29], device='cuda:0')
+370 tensor([12])
+tensor([12], device='cuda:0')
+371 tensor([12])
+tensor([12], device='cuda:0')
+372 tensor([8])
+tensor([8], device='cuda:0')
+373 tensor([29])
+tensor([29], device='cuda:0')
+374 tensor([29])
+tensor([29], device='cuda:0')
+375 tensor([29])
+tensor([29], device='cuda:0')
+376 tensor([29])
+tensor([29], device='cuda:0')
+377 tensor([29])
+tensor([29], device='cuda:0')
+378 tensor([29])
+tensor([29], device='cuda:0')
+379 tensor([18])
+tensor([18], device='cuda:0')
+380 tensor([29])
+tensor([29], device='cuda:0')
+381 tensor([29])
+tensor([29], device='cuda:0')
+382 tensor([29])
+tensor([29], device='cuda:0')
+383 tensor([29])
+tensor([29], device='cuda:0')
+384 tensor([29])
+tensor([29], device='cuda:0')
+385 tensor([29])
+tensor([29], device='cuda:0')
+386 tensor([29])
+tensor([29], device='cuda:0')
+387 tensor([29])
+tensor([29], device='cuda:0')
+388 tensor([2])
+tensor([2], device='cuda:0')
+389 tensor([29])
+tensor([29], device='cuda:0')
+390 tensor([29])
+tensor([29], device='cuda:0')
+391 tensor([12])
+tensor([12], device='cuda:0')
+392 tensor([29])
+tensor([29], device='cuda:0')
+393 tensor([1])
+tensor([1], device='cuda:0')
+394 tensor([29])
+tensor([29], device='cuda:0')
+395 tensor([29])
+tensor([29], device='cuda:0')
+396 tensor([29])
+tensor([29], device='cuda:0')
+397 tensor([29])
+tensor([29], device='cuda:0')
+398 tensor([12])
+tensor([12], device='cuda:0')
+399 tensor([29])
+tensor([29], device='cuda:0')
+400 tensor([29])
+tensor([29], device='cuda:0')
+401 tensor([41])
+tensor([41], device='cuda:0')
+402 tensor([24])
+tensor([24], device='cuda:0')
+403 tensor([29])
+tensor([29], device='cuda:0')
+404 tensor([29])
+tensor([29], device='cuda:0')
+405 tensor([29])
+tensor([29], device='cuda:0')
+406 tensor([29])
+tensor([29], device='cuda:0')
+407 tensor([6])
+tensor([6], device='cuda:0')
+408 tensor([6])
+tensor([6], device='cuda:0')
+409 tensor([12])
+tensor([12], device='cuda:0')
+410 tensor([29])
+tensor([29], device='cuda:0')
+411 tensor([29])
+tensor([29], device='cuda:0')
+412 tensor([29])
+tensor([29], device='cuda:0')
+413 tensor([13])
+tensor([13], device='cuda:0')
+414 tensor([19])
+tensor([19], device='cuda:0')
+415 tensor([41])
+Traceback (most recent call last):
+  File "run_luke_tacred.py", line 358, in <module>
+    main()
+  File "run_luke_tacred.py", line 354, in main
+    do_train(args, train_dataloader, model)
+  File "run_luke_tacred.py", line 260, in do_train
+    trainer.train()  # 这儿相当于forward
+  File "run_luke_tacred.py", line 90, in train
+    outputs = model(**inputs)  # 训练计算
+  File "/home/LAB/zhaoqh/phd4hh/zhaoqh_venv/kformers/lib/python3.6/site-packages/torch/nn/modules/module.py", line 727, in _call_impl
+    result = self.forward(*input, **kwargs)
+  File "/home/LAB/zhaoqh/phd4hh/KFormers/luke_reimplement_tacred/luke_modeling.py", line 292, in forward
+    entity_attention_mask,
+  File "/home/LAB/zhaoqh/phd4hh/zhaoqh_venv/kformers/lib/python3.6/site-packages/torch/nn/modules/module.py", line 727, in _call_impl
+    result = self.forward(*input, **kwargs)
+  File "/home/LAB/zhaoqh/phd4hh/KFormers/luke_reimplement_tacred/luke_modeling.py", line 229, in forward
+    output = self.encoder(word_embeddings, entity_embeddings, attention_mask)
+  File "/home/LAB/zhaoqh/phd4hh/zhaoqh_venv/kformers/lib/python3.6/site-packages/torch/nn/modules/module.py", line 727, in _call_impl
+    result = self.forward(*input, **kwargs)
+  File "/home/LAB/zhaoqh/phd4hh/KFormers/luke_reimplement_tacred/luke_modeling.py", line 186, in forward
+    word_hidden_states, entity_hidden_states, attention_mask
+  File "/home/LAB/zhaoqh/phd4hh/zhaoqh_venv/kformers/lib/python3.6/site-packages/torch/nn/modules/module.py", line 727, in _call_impl
+    result = self.forward(*input, **kwargs)
+  File "/home/LAB/zhaoqh/phd4hh/KFormers/luke_reimplement_tacred/luke_modeling.py", line 171, in forward
+    intermediate_output = self.intermediate(attention_output)  # 2, 62, 3072
+  File "/home/LAB/zhaoqh/phd4hh/zhaoqh_venv/kformers/lib/python3.6/site-packages/torch/nn/modules/module.py", line 727, in _call_impl
+    result = self.forward(*input, **kwargs)
+  File "/home/LAB/zhaoqh/phd4hh/zhaoqh_venv/kformers/lib/python3.6/site-packages/transformers/models/bert/modeling_bert.py", line 362, in forward
+    hidden_states = self.intermediate_act_fn(hidden_states)
+  File "/home/LAB/zhaoqh/phd4hh/zhaoqh_venv/kformers/lib/python3.6/site-packages/torch/nn/functional.py", line 1383, in gelu
+    return torch._C._nn.gelu(input)
+RuntimeError: CUDA error: device-side assert triggered
+/pytorch/aten/src/ATen/native/cuda/Indexing.cu:605: indexSelectSmallIndex: block: [0,0,0], thread: [64,0,0] Assertion `srcIndex < srcSelectDimSize` failed.
+/pytorch/aten/src/ATen/native/cuda/Indexing.cu:605: indexSelectSmallIndex: block: [0,0,0], thread: [65,0,0] Assertion `srcIndex < srcSelectDimSize` failed.
+/pytorch/aten/src/ATen/native/cuda/Indexing.cu:605: indexSelectSmallIndex: block: [0,0,0], thread: [66,0,0] Assertion `srcIndex < srcSelectDimSize` failed.
+/pytorch/aten/src/ATen/native/cuda/Indexing.cu:605: indexSelectSmallIndex: block: [0,0,0], thread: [67,0,0] Assertion `srcIndex < srcSelectDimSize` failed.
+/pytorch/aten/src/ATen/native/cuda/Indexing.cu:605: indexSelectSmallIndex: block: [0,0,0], thread: [68,0,0] Assertion `srcIndex < srcSelectDimSize` failed.
+/pytorch/aten/src/ATen/native/cuda/Indexing.cu:605: indexSelectSmallIndex: block: [0,0,0], thread: [69,0,0] Assertion `srcIndex < srcSelectDimSize` failed.
+/pytorch/aten/src/ATen/native/cuda/Indexing.cu:605: indexSelectSmallIndex: block: [0,0,0], thread: [70,0,0] Assertion `srcIndex < srcSelectDimSize` failed.
+/pytorch/aten/src/ATen/native/cuda/Indexing.cu:605: indexSelectSmallIndex: block: [0,0,0], thread: [71,0,0] Assertion `srcIndex < srcSelectDimSize` failed.
+/pytorch/aten/src/ATen/native/cuda/Indexing.cu:605: indexSelectSmallIndex: block: [0,0,0], thread: [72,0,0] Assertion `srcIndex < srcSelectDimSize` failed.
+/pytorch/aten/src/ATen/native/cuda/Indexing.cu:605: indexSelectSmallIndex: block: [0,0,0], thread: [73,0,0] Assertion `srcIndex < srcSelectDimSize` failed.
+/pytorch/aten/src/ATen/native/cuda/Indexing.cu:605: indexSelectSmallIndex: block: [0,0,0], thread: [74,0,0] Assertion `srcIndex < srcSelectDimSize` failed.
+/pytorch/aten/src/ATen/native/cuda/Indexing.cu:605: indexSelectSmallIndex: block: [0,0,0], thread: [75,0,0] Assertion `srcIndex < srcSelectDimSize` failed.
+/pytorch/aten/src/ATen/native/cuda/Indexing.cu:605: indexSelectSmallIndex: block: [0,0,0], thread: [76,0,0] Assertion `srcIndex < srcSelectDimSize` failed.
+/pytorch/aten/src/ATen/native/cuda/Indexing.cu:605: indexSelectSmallIndex: block: [0,0,0], thread: [77,0,0] Assertion `srcIndex < srcSelectDimSize` failed.
+/pytorch/aten/src/ATen/native/cuda/Indexing.cu:605: indexSelectSmallIndex: block: [0,0,0], thread: [78,0,0] Assertion `srcIndex < srcSelectDimSize` failed.
+/pytorch/aten/src/ATen/native/cuda/Indexing.cu:605: indexSelectSmallIndex: block: [0,0,0], thread: [79,0,0] Assertion `srcIndex < srcSelectDimSize` failed.
+/pytorch/aten/src/ATen/native/cuda/Indexing.cu:605: indexSelectSmallIndex: block: [0,0,0], thread: [80,0,0] Assertion `srcIndex < srcSelectDimSize` failed.
+/pytorch/aten/src/ATen/native/cuda/Indexing.cu:605: indexSelectSmallIndex: block: [0,0,0], thread: [81,0,0] Assertion `srcIndex < srcSelectDimSize` failed.
+/pytorch/aten/src/ATen/native/cuda/Indexing.cu:605: indexSelectSmallIndex: block: [0,0,0], thread: [82,0,0] Assertion `srcIndex < srcSelectDimSize` failed.
+/pytorch/aten/src/ATen/native/cuda/Indexing.cu:605: indexSelectSmallIndex: block: [0,0,0], thread: [83,0,0] Assertion `srcIndex < srcSelectDimSize` failed.
+/pytorch/aten/src/ATen/native/cuda/Indexing.cu:605: indexSelectSmallIndex: block: [0,0,0], thread: [84,0,0] Assertion `srcIndex < srcSelectDimSize` failed.
+/pytorch/aten/src/ATen/native/cuda/Indexing.cu:605: indexSelectSmallIndex: block: [0,0,0], thread: [85,0,0] Assertion `srcIndex < srcSelectDimSize` failed.
+/pytorch/aten/src/ATen/native/cuda/Indexing.cu:605: indexSelectSmallIndex: block: [0,0,0], thread: [86,0,0] Assertion `srcIndex < srcSelectDimSize` failed.
+/pytorch/aten/src/ATen/native/cuda/Indexing.cu:605: indexSelectSmallIndex: block: [0,0,0], thread: [87,0,0] Assertion `srcIndex < srcSelectDimSize` failed.
+/pytorch/aten/src/ATen/native/cuda/Indexing.cu:605: indexSelectSmallIndex: block: [0,0,0], thread: [88,0,0] Assertion `srcIndex < srcSelectDimSize` failed.
+/pytorch/aten/src/ATen/native/cuda/Indexing.cu:605: indexSelectSmallIndex: block: [0,0,0], thread: [89,0,0] Assertion `srcIndex < srcSelectDimSize` failed.
+/pytorch/aten/src/ATen/native/cuda/Indexing.cu:605: indexSelectSmallIndex: block: [0,0,0], thread: [90,0,0] Assertion `srcIndex < srcSelectDimSize` failed.
+/pytorch/aten/src/ATen/native/cuda/Indexing.cu:605: indexSelectSmallIndex: block: [0,0,0], thread: [91,0,0] Assertion `srcIndex < srcSelectDimSize` failed.
+/pytorch/aten/src/ATen/native/cuda/Indexing.cu:605: indexSelectSmallIndex: block: [0,0,0], thread: [92,0,0] Assertion `srcIndex < srcSelectDimSize` failed.
+/pytorch/aten/src/ATen/native/cuda/Indexing.cu:605: indexSelectSmallIndex: block: [0,0,0], thread: [93,0,0] Assertion `srcIndex < srcSelectDimSize` failed.
+/pytorch/aten/src/ATen/native/cuda/Indexing.cu:605: indexSelectSmallIndex: block: [0,0,0], thread: [94,0,0] Assertion `srcIndex < srcSelectDimSize` failed.
+/pytorch/aten/src/ATen/native/cuda/Indexing.cu:605: indexSelectSmallIndex: block: [0,0,0], thread: [95,0,0] Assertion `srcIndex < srcSelectDimSize` failed.
+/pytorch/aten/src/ATen/native/cuda/Indexing.cu:605: indexSelectSmallIndex: block: [6,0,0], thread: [0,0,0] Assertion `srcIndex < srcSelectDimSize` failed.
+/pytorch/aten/src/ATen/native/cuda/Indexing.cu:605: indexSelectSmallIndex: block: [6,0,0], thread: [1,0,0] Assertion `srcIndex < srcSelectDimSize` failed.
+/pytorch/aten/src/ATen/native/cuda/Indexing.cu:605: indexSelectSmallIndex: block: [6,0,0], thread: [2,0,0] Assertion `srcIndex < srcSelectDimSize` failed.
+/pytorch/aten/src/ATen/native/cuda/Indexing.cu:605: indexSelectSmallIndex: block: [6,0,0], thread: [3,0,0] Assertion `srcIndex < srcSelectDimSize` failed.
+/pytorch/aten/src/ATen/native/cuda/Indexing.cu:605: indexSelectSmallIndex: block: [6,0,0], thread: [4,0,0] Assertion `srcIndex < srcSelectDimSize` failed.
+/pytorch/aten/src/ATen/native/cuda/Indexing.cu:605: indexSelectSmallIndex: block: [6,0,0], thread: [5,0,0] Assertion `srcIndex < srcSelectDimSize` failed.
+/pytorch/aten/src/ATen/native/cuda/Indexing.cu:605: indexSelectSmallIndex: block: [6,0,0], thread: [6,0,0] Assertion `srcIndex < srcSelectDimSize` failed.
+/pytorch/aten/src/ATen/native/cuda/Indexing.cu:605: indexSelectSmallIndex: block: [6,0,0], thread: [7,0,0] Assertion `srcIndex < srcSelectDimSize` failed.
+/pytorch/aten/src/ATen/native/cuda/Indexing.cu:605: indexSelectSmallIndex: block: [6
