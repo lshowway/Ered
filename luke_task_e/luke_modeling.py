@@ -18,8 +18,7 @@ from transformers.models.bert.modeling_bert import (
     BertPooler,
     BertSelfOutput,
 )
-from transformers.models.roberta.modeling_roberta import RobertaEmbeddings
-import torch.nn.functional as F
+from transformers.models.roberta.modeling_roberta import RobertaEmbeddings, RobertaEncoder
 logger = logging.getLogger(__name__)
 
 
@@ -90,8 +89,8 @@ class KnowledgeEntityEmbeddings(nn.Module):
 
         self.k_entity_embeddings = nn.Embedding(config.k_entity_vocab_size, config.entity_emb_size, padding_idx=0)  # 2*256
 
-        # for k, v in self.k_entity_embeddings.named_parameters():
-        #     v.requires_grad = False
+        for k, v in self.k_entity_embeddings.named_parameters():
+            v.requires_grad = False
 
         if config.entity_emb_size != config.hidden_size:
             self.entity_embedding_dense = nn.Linear(config.entity_emb_size, config.hidden_size, bias=False)
@@ -252,6 +251,7 @@ class LukeModel(nn.Module):
         self.config = config
 
         self.encoder = BertEncoder(config)  # 这个的作用是什么？
+        # self.encoder = RobertaEncoder(config)  # 这个的作用是什么？
         self.pooler = BertPooler(config)
 
         if self.config.bert_model_name and "roberta" in self.config.bert_model_name:
@@ -263,38 +263,6 @@ class LukeModel(nn.Module):
 
         self.k_entity_embeddings = KnowledgeEntityEmbeddings(config)  # 50w*256
 
-        # for k, v in self.k_entity_embeddings.named_parameters():
-        #     v.requires_grad = False
-
-    def forward(
-            self,
-            word_ids: torch.LongTensor,
-            word_segment_ids: torch.LongTensor,
-            word_attention_mask: torch.LongTensor,
-            entity_ids: torch.LongTensor = None,
-            entity_position_ids: torch.LongTensor = None,
-            entity_segment_ids: torch.LongTensor = None,
-            entity_attention_mask: torch.LongTensor = None,
-    ):
-        word_seq_size = word_ids.size(1)
-
-        embedding_output = self.embeddings(word_ids, word_segment_ids)
-
-        attention_mask = self._compute_extended_attention_mask(word_attention_mask, entity_attention_mask)
-        if entity_ids is not None:
-            entity_embedding_output = self.entity_embeddings(entity_ids, entity_position_ids, entity_segment_ids)
-            embedding_output = torch.cat([embedding_output, entity_embedding_output], dim=1)
-
-        encoder_outputs = self.encoder(embedding_output, attention_mask, [None] * self.config.num_hidden_layers)
-        sequence_output = encoder_outputs[0]
-        word_sequence_output = sequence_output[:, :word_seq_size, :]
-        pooled_output = self.pooler(sequence_output)
-
-        if entity_ids is not None:
-            entity_sequence_output = sequence_output[:, word_seq_size:, :]
-            return (word_sequence_output, entity_sequence_output, pooled_output,) + encoder_outputs[1:]
-        else:
-            return (word_sequence_output, pooled_output,) + encoder_outputs[1:]
 
     def init_weights(self, module: nn.Module):
         if isinstance(module, nn.Linear):
@@ -310,57 +278,13 @@ class LukeModel(nn.Module):
         if isinstance(module, nn.Linear) and module.bias is not None:
             module.bias.data.zero_()
 
-    def load_bert_weights(self, state_dict: Dict[str, torch.Tensor]):
-        state_dict = state_dict.copy()
-        for key in list(state_dict.keys()):
-            new_key = key.replace("gamma", "weight").replace("beta", "bias")
-            if new_key.startswith("roberta."):
-                new_key = new_key[8:]
-            elif new_key.startswith("bert."):
-                new_key = new_key[5:]
-
-            if key != new_key:
-                state_dict[new_key] = state_dict[key]
-                del state_dict[key]
-
-        missing_keys = []
-        unexpected_keys = []
-        error_msgs = []
-
-        metadata = getattr(state_dict, "_metadata", None)
-        state_dict = state_dict.copy()
-        if metadata is not None:
-            state_dict._metadata = metadata
-
-        def load(module, prefix=""):
-            local_metadata = {} if metadata is None else metadata.get(prefix[:-1], {})
-            module._load_from_state_dict(
-                state_dict, prefix, local_metadata, True, missing_keys, unexpected_keys, error_msgs
-            )
-            for name, child in module._modules.items():
-                if child is not None:
-                    load(child, prefix + name + ".")
-
-        load(self, prefix="")
-        if len(unexpected_keys) > 0:
-            logger.info(
-                "Weights from pretrained model not used in {}: {}".format(
-                    self.__class__.__name__, sorted(unexpected_keys)
-                )
-            )
-        if len(error_msgs) > 0:
-            raise RuntimeError(
-                "Error(s) in loading state_dict for {}:\n\t{}".format(self.__class__.__name__, "\n\t".join(error_msgs))
-            )
-
     def _compute_extended_attention_mask(self, word_attention_mask: torch.LongTensor,
                                          k_ent_mask: torch.LongTensor,
                                          entity_attention_mask: torch.LongTensor):
         attention_mask = word_attention_mask
-        if k_ent_mask is not None:
-            attention_mask = torch.cat([attention_mask, k_ent_mask], dim=1)
-        if entity_attention_mask is not None:
-            attention_mask = torch.cat([attention_mask, entity_attention_mask], dim=1)
+
+        attention_mask = torch.cat([attention_mask, k_ent_mask, entity_attention_mask], dim=1)
+
         extended_attention_mask = attention_mask.unsqueeze(1).unsqueeze(2)
         extended_attention_mask = extended_attention_mask.to(dtype=next(self.parameters()).dtype)
         extended_attention_mask = (1.0 - extended_attention_mask) * -10000.0
@@ -420,7 +344,6 @@ class LukeEntityAwareAttentionModel(LukeModel):
                     new_state_dict[f"encoder.layer.{num}.attention.self.e2e_query.{attr_name}"] = state_dict[
                         f"encoder.layer.{num}.attention.self.query.{attr_name}"
                     ]
-        # new_state_dict['k_entity_embeddings.k_entity_embeddings.weight'] = state_dict['entity_embeddings.entity_embeddings.weight']
 
             # word embedding
             # args.model_config.vocab_size += 1
@@ -455,10 +378,10 @@ class LukeForEntityTyping(LukeEntityAwareAttentionModel):
         self.num_labels = num_labels
         self.max_ent_num = args.max_ent_num
         self.dropout = nn.Dropout(args.model_config.hidden_dropout_prob)
-        self.typing = nn.Linear(args.model_config.hidden_size, num_labels)
 
-        self.cross_entropy_loss = nn.CrossEntropyLoss(reduction='mean')
-        # self.aux = nn.Linear(args.model_config.hidden_size, 1)
+        self.typing = nn.Linear(args.model_config.hidden_size, num_labels)
+        # self.typing_2 = nn.Linear(args.model_config.hidden_size, num_labels)
+
 
         self.apply(self.init_weights)
 
@@ -487,9 +410,8 @@ class LukeForEntityTyping(LukeEntityAwareAttentionModel):
         )
 
         text_k_vector, entity_vector = encoder_outputs
-        text_vector = text_k_vector[:, :word_ids.size(1), :]
-        k_ent_vector = text_k_vector[:, -k_entity_ids.size(1):, :]
 
+        # main loss
         feature_vector = entity_vector[:, 0, :]  # 2*768
         feature_vector = self.dropout(feature_vector)
         logits = self.typing(feature_vector)
@@ -498,14 +420,20 @@ class LukeForEntityTyping(LukeEntityAwareAttentionModel):
 
         main_loss = F.binary_cross_entropy_with_logits(logits.view(-1), labels.view(-1).type_as(logits))
 
+        # aux loss
+        text_vector = text_k_vector[:, :word_ids.size(1), :] # batch L d
+        k_ent_vector = text_k_vector[:, -k_entity_ids.size(1):, :] # batch K d
+        true_ent_vec = k_ent_vector[range(k_ent_vector.size(0)), k_label]
+        logits_2 = self.typing(entity_vector[:, 0, :] + true_ent_vec) # ENT表征+true_e
+        # logits_2 = self.typing_2(text_vector[:, 0, :] + true_ent_vec) # 文本表征+true_e
 
-        # batch, max_ent_num, d
-        # aug_text_vector = text_vector[:, :1, :] + k_ent_vector
-        # aux_logits = self.aux(aug_text_vector) # batch max_ent_num
-        aux_logits = torch.matmul(text_vector[:, :1, :], k_ent_vector.permute(0, 2, 1))
-        aux_loss = self.cross_entropy_loss(aux_logits.view(-1, self.max_ent_num), k_label.view(-1))
+        loss_2 = F.binary_cross_entropy_with_logits(logits_2.view(-1), labels.view(-1).type_as(logits_2))
 
-        total_loss = (main_loss + 0.01 *  aux_loss, )
+        # aux_logits = self.fc(text_vector[:, :1, :] + k_ent_vector)
+        # aux_logits = self.fc(self.dropout(feature_vector.unsqueeze(1) + k_ent_vector))
+        # aux_loss = self.cross_entropy_loss(aux_logits.view(-1, self.max_ent_num), k_label.view(-1))
+
+        total_loss = (main_loss + loss_2, )
 
         return total_loss
 

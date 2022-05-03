@@ -81,9 +81,24 @@ class Trainer(object):
         model.train()
         # 准备好data, optimizer, scheduler, model现在开始训练(这个disable是干嘛的，分布式的时候不使用tqdm？
         set_seed(self.args)
+        t = ['typing.weight', 'typing.bias']
+        value = [0, 0]
+        count = 0
         with tqdm(total=self.num_train_steps, disable=self.args.local_rank not in (-1, 0)) as pbar:
             while True:
+
+
                 for step, batch in enumerate(self.dataloader):
+
+                    # count += 1
+                    # weight = model.typing.weight.data
+                    # bias = model.typing.bias.data
+                    # weight = (value[0] * (count - 1) + weight) / count
+                    # bias = (value[1] * (count - 1) + bias) / count
+                    # value = [weight, bias]
+                    # model.typing.weight.data_ = weight
+                    # model.typing.bias.data_ = bias
+
                     inputs = {k: v.to(self.args.device) for k, v in self._create_model_arguments(batch).items()}
                     outputs = model(**inputs)  # 训练计算
                     loss = outputs[0]

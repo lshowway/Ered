@@ -168,19 +168,6 @@ def openentity_metric(out, l):
             return 0.
         return 2 * p * r / float(p + r)
 
-    def loose_macro(true, pred):
-        num_entities = len(true)
-        p = 0.
-        r = 0.
-        for true_labels, predicted_labels in zip(true, pred):
-            if len(predicted_labels) > 0:
-                p += len(set(predicted_labels).intersection(set(true_labels))) / float(len(predicted_labels))
-            if len(true_labels):
-                r += len(set(predicted_labels).intersection(set(true_labels))) / float(len(true_labels))
-        precision = p / num_entities
-        recall = r / num_entities
-        # return round(precision, 4), round(recall, 4), round(f1(precision, recall), 4)
-        return round(f1(precision, recall), 4)
 
     def loose_micro(true, pred):
         num_predicted_labels = 0.
@@ -196,28 +183,21 @@ def openentity_metric(out, l):
             precision = 0.
         recall = num_correct_labels / num_true_labels
         return round(precision, 4), round(recall, 4), round(f1(precision, recall), 4)
-        # return f1(precision, recall)
 
-    cnt = 0
     y1 = []
     y2 = []
     for x1, x2 in zip(out, l):
         yy1 = []
         yy2 = []
-        top = max(x1)
         for i in range(len(x1)):
-            # if x1[i] > 0 or x1[i] == top:
             if x1[i] > 0:
                 yy1.append(i)
             if x2[i] > 0:
                 yy2.append(i)
         y1.append(yy1)
         y2.append(yy2)
-        cnt += set(yy1) == set(yy2)  # 要完全预测对
-    acc = round(cnt / l.shape[0], 4)
-    # rel = {'count': cnt, 'accuracy': acc, 'macro_F1': loose_macro(y2, y1), 'micro_F1': loose_micro(y2, y1)}
     p, r, f_value = loose_micro(y2, y1)
-    rel = {'count': cnt, 'accuracy': acc, 'precision': p, 'recall': r, 'micro_F1': f_value}
+    rel = {'precision': p, 'recall': r, 'micro_F1': f_value}
     return rel
 
 
@@ -239,13 +219,13 @@ def figer_metric(out, l):
                 r += len(set(predicted_labels).intersection(set(true_labels))) / float(len(true_labels))
         precision = p / num_entities
         recall = r / num_entities
-        # return round(precision, 4), round(recall, 4), round(f1(precision, recall), 4)
         return round(f1(precision, recall), 4)
 
     def loose_micro(true, pred):
         num_predicted_labels = 0.
         num_true_labels = 0.
         num_correct_labels = 0.
+
         for true_labels, predicted_labels in zip(true, pred):
             num_predicted_labels += len(predicted_labels)
             num_true_labels += len(true_labels)
@@ -255,7 +235,6 @@ def figer_metric(out, l):
         else:
             precision = 0.
         recall = num_correct_labels / num_true_labels
-        # return round(precision, 4), round(recall, 4), round(f1(precision, recall), 4)
         return round(f1(precision, recall), 4)
 
     cnt = 0
@@ -264,9 +243,7 @@ def figer_metric(out, l):
     for x1, x2 in zip(out, l):
         yy1 = []
         yy2 = []
-        top = max(x1)
         for i in range(len(x1)):
-            # if x1[i] > 0 or x1[i] == top:
             if x1[i] > 0:
                 yy1.append(i)
             if x2[i] > 0:
@@ -277,7 +254,7 @@ def figer_metric(out, l):
     acc = round(cnt / l.shape[0], 4)
     macro_F1 = loose_macro(y2, y1)
     micro_F1 = loose_micro(y2, y1)
-    rel = {'count': cnt, 'accuracy': acc, 'macro_F1': macro_F1, 'micro_F1': micro_F1}
+    rel = {'accuracy': acc, 'macro_F1': macro_F1, 'micro_F1': micro_F1}
     return rel
 
 

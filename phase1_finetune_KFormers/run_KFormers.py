@@ -1,6 +1,8 @@
 import time
 import logging
+import os
 import torch
+import shutil
 import numpy as np
 import random
 from collections import OrderedDict
@@ -17,156 +19,310 @@ from transformers.models.bert.tokenization_bert_fast import BertTokenizerFast
 from transformers.models.roberta import RobertaConfig, RobertaForSequenceClassification
 from transformers.models.roberta.tokenization_roberta_fast import RobertaTokenizerFast
 
-from transformers.optimization import AdamW, get_linear_schedule_with_warmup
+from transformers.optimization import AdamW, get_linear_schedule_with_warmup, \
+    get_cosine_schedule_with_warmup, get_polynomial_decay_schedule_with_warmup, get_constant_schedule_with_warmup
 
-
+from tensorboardX import SummaryWriter
 from parameters import parse_args
 from utils import compute_metrics
 from data_utils import output_modes, processors, final_metric
+from model_utils import ModelArchive
+from util import NullLogger
+from data_utils import ENTITY_TOKEN, MASK_TOKEN
 
 logger = logging.getLogger(__name__)
 
 BACKBONE_MODEL_CLASSES = {
     'bert': (BertConfig, BertForSequenceClassification, BertTokenizerFast),
     'roberta': (RobertaConfig, RobertaForSequenceClassification, RobertaTokenizerFast),
+    'luke': (RobertaConfig, RobertaForSequenceClassification, RobertaTokenizerFast),
 }
 KNOWLEDGE_MODEL_CLASSES = {
     'distilbert': (DistilBertConfig, DistilBertForSequenceClassification, DistilBertTokenizerFast),
 }
 
 
-def setup(rank, world_size):
-    # initialize the process group
-    torch.distributed.init_process_group("nccl", rank=rank, world_size=world_size, )
-    torch.cuda.set_device(rank)
-    # Explicitly setting seed
-    torch.manual_seed(42)
-    np.random.seed(42)
-    random.seed(42)
+# def setup(rank, world_size):
+#     # initialize the process group
+#     torch.distributed.init_process_group("nccl", rank=rank, world_size=world_size, )
+#     torch.cuda.set_device(rank)
+#     # Explicitly setting seed
+#     torch.manual_seed(42)
+#     np.random.seed(42)
+#     random.seed(42)
 
 
-def softmax(x):
-    x_row_max = x.max(axis=-1)
-    x_row_max = x_row_max.reshape(list(x.shape)[:-1] + [1])
-    x = x - x_row_max
-    x_exp = np.exp(x)
-    x_exp_row_sum = x_exp.sum(axis=-1).reshape(list(x.shape)[:-1] + [1])
-    softmax = x_exp / x_exp_row_sum
-    return softmax
+# def softmax(x):
+#     x_row_max = x.max(axis=-1)
+#     x_row_max = x_row_max.reshape(list(x.shape)[:-1] + [1])
+#     x = x - x_row_max
+#     x_exp = np.exp(x)
+#     x_exp_row_sum = x_exp.sum(axis=-1).reshape(list(x.shape)[:-1] + [1])
+#     softmax = x_exp / x_exp_row_sum
+#     return softmax
 
 
-def load_kformers(args, backbone_config_class, k_config_class, backbone_model_class, k_model_class,
-                  KFormersDownstreamModel, BaselineDownstreamModel):
+def load_kformers_from_backbone_knowledge(args, k_config_class, k_model_class, KFormersDownstreamModel):
 
-    config_backbone = backbone_config_class.from_pretrained(args.backbone_model_name_or_path, output_hidden_states=True)
-    config_backbone.num_labels = args.num_labels
+    # 加载luke的参数
+    model_archive = ModelArchive.load("../checkpoints/luke_large_500k")
+    args.model_config = model_archive.config
 
-    if args.add_knowledge:
-        config_k = k_config_class.from_pretrained(args.knowledge_model_name_or_path,
-                                                  output_hidden_states=True)  # 这是DistillBert的config
-        kformers_model = KFormersDownstreamModel(config=config_backbone, config_k=config_k,
-                                                 backbone_knowledge_dict=args.backbone_knowledge_dict)
-        # Load or initialize parameters.
-        load_parameters = "pretrained"
-        if load_parameters == "initialization":
-            # Initialize with normal distribution.
-            for n, p in list(kformers_model.named_parameters()):
-                if 'gamma' not in n and 'beta' not in n:
-                    p.data.normal_(0, 0.02)
+    args.model_config.num_labels = args.num_labels
+    args.model_config.vocab_size += 1
+    args.entity_vocab = model_archive.entity_vocab # 不用这一步了吧
+    args.model_config.entity_vocab_size = 2
+    args.model_config.k_entity_vocab_size = len(args.entity_vocab)
+
+    args.experiment = NullLogger()
+
+    # load checkpoint
+    model_weights = torch.load('../checkpoints/luke_large_500k/pytorch_model.bin', map_location=args.device)
+
+    # word embedding
+    word_emb = model_weights["embeddings.word_embeddings.weight"]  # 50265*768
+    marker_emb = word_emb[args.tokenizer.convert_tokens_to_ids(["@"])[0]].unsqueeze(0)  # 1*768
+    model_weights["embeddings.word_embeddings.weight"] = torch.cat([word_emb, marker_emb])  # 后面拼一个marker_emb
+    args.tokenizer.add_special_tokens(dict(additional_special_tokens=[ENTITY_TOKEN]))
+    # ent_knowledge embedding
+    entity_emb = model_weights["entity_embeddings.entity_embeddings.weight"]  # 50W*256
+    model_weights['k_ent_embeddings.entity_embeddings.weight'] = entity_emb  # ???还要多拼一个吗？
+    model_weights['k_ent_embeddings.entity_embedding_dense.weight'] = model_weights['entity_embeddings.entity_embedding_dense.weight']
+    model_weights['k_ent_embeddings.LayerNorm.weight'] = model_weights['entity_embeddings.LayerNorm.weight']
+    model_weights['k_ent_embeddings.LayerNorm.bias'] = model_weights['entity_embeddings.LayerNorm.bias']
+    # entity embedding
+    entity_emb = model_weights["entity_embeddings.entity_embeddings.weight"]  # 50W*256
+    mask_emb = entity_emb[args.entity_vocab[MASK_TOKEN]].unsqueeze(0)  # 1*256
+    model_weights["entity_embeddings.entity_embeddings.weight"] = torch.cat([entity_emb[:1], mask_emb])  # 2*256?
+
+    for num in range(args.model_config.num_hidden_layers):
+        for attr_name in ("weight", "bias"):
+            if f"encoder.layer.{num}.attention.self.w2e_query.{attr_name}" not in model_weights:
+                model_weights[f"encoder.layer.{num}.attention.self.w2e_query.{attr_name}"] = model_weights[
+                    f"encoder.layer.{num}.attention.self.query.{attr_name}"
+                ]
+            if f"encoder.layer.{num}.attention.self.e2w_query.{attr_name}" not in model_weights:
+                model_weights[f"encoder.layer.{num}.attention.self.e2w_query.{attr_name}"] = model_weights[
+                    f"encoder.layer.{num}.attention.self.query.{attr_name}"
+                ]
+            if f"encoder.layer.{num}.attention.self.e2e_query.{attr_name}" not in model_weights:
+                model_weights[f"encoder.layer.{num}.attention.self.e2e_query.{attr_name}"] = model_weights[
+                    f"encoder.layer.{num}.attention.self.query.{attr_name}"
+                ]
+
+    #=================================
+    config_k = k_config_class.from_pretrained(args.knowledge_model_name_or_path, output_hidden_states=True)  # 这是DistillBert的config
+    kformers_model = KFormersDownstreamModel(args=args, config_k=config_k,
+                                             backbone_knowledge_dict=args.backbone_knowledge_dict)
+
+    kformer_dict = kformers_model.state_dict()  # KFormers的全部参数
+
+
+    news_kformers_state_dict = OrderedDict()
+    # 加载luke的预训练参数
+    for key, value in model_weights.items():
+        key = 'kformers.'+key
+        if 'embeddings' in key or 'pooler' in key:
+            news_kformers_state_dict[key] = value
+        elif 'encoder' in key:
+            i = key.split('kformers.encoder.layer.')[-1]
+            i = i.split('.')[0]
+            i = int(i)
+            key = key.replace('kformers.encoder.layer.%s' % i, 'kformers.encoder.layer.%s.backbone_layer' % i)
+            # if i > 18:
+            #     news_kformers_state_dict[key] = kformer_dict[key]
+            # else:
+            news_kformers_state_dict[key] = value
+        elif 'classifier.dense' in key: # classifier的dense要不要初始化呢？
+            news_kformers_state_dict[key] = value
+            pass
         else:
-            # Initialize with pretrained model.
-            state_dict = kformers_model.state_dict()  # KFormers的全部参数
-
-            # for x in state_dict.keys():
-            #     print(x)
-
-            if args.post_trained_checkpoint is not None:
-                backbone_model_dict = backbone_model_class.from_pretrained(args.post_trained_checkpoint,
-                                                                           config=config_backbone).state_dict()
-            else:
-                backbone_model_dict = backbone_model_class.from_pretrained(args.backbone_model_name_or_path,
-                                                                       config=config_backbone).state_dict()
-            knowledge_model_dict = k_model_class.from_pretrained(args.knowledge_model_name_or_path,
-                                                                 config=config_k).state_dict()
-
-            # for k, v in backbone_model_dict.items():
-            #     print(k)
-
-            # for k, v in knowledge_model_dict.items():
-            #     print(k)
-
-            news_kformers_state_dict = OrderedDict()
-            for key, value in backbone_model_dict.items():
-                key = key.replace(args.backbone_model_type, 'kformers')
-                if 'embeddings' in key:
-                    news_kformers_state_dict[key] = value
-                # "classifier.out_proj.weight", "classifier.out_proj.bias"这是roberta的
-                elif key in ["kformers.pooler.dense.weight", "kformers.pooler.dense.bias",
-                             "classifier.weight", "classifier.bias", "classifier.out_proj.weight",
-                             "classifier.out_proj.bias"]:  # from_pretrained有的
-                    # news_kformers_state_dict[key] = value
-                    continue
-                elif key in ["classifier.dense.weight", "classifier.dense.bias"]:  # for roberta
-                    if args.task_name in ['tacred', 'fewrel']:
-                        # if the task is relation classification, the output layer is not initialized by checkpoints
-                        pass
-                    else:
-                        news_kformers_state_dict[key] = value
-                elif key in ["classifier.weight", "classifier.bias"]:  # from_pretrained有的
-                    pass
-                elif key in ["lm_head.bias", "lm_head.dense.weight", "lm_head.dense.bias",
-                             "lm_head.layer_norm.weight", "lm_head.layer_norm.bias",
-                             "lm_head.decoder.weight"]:  # load有的参数
-                    pass
-                else:
-                    i = key.split('kformers.encoder.layer.')[-1]
-                    i = i.split('.')[0]
-                    i = int(i)
-                    key = key.replace('kformers.encoder.layer.%s' % i, 'kformers.encoder.layer.%s.backbone_layer' % i)
-                    news_kformers_state_dict[key] = value
-
-            backbone_knowledge_dict_reverse = {v: k for k, v in args.backbone_knowledge_dict.items()}
-            for key, value in knowledge_model_dict.items():
-                key = key.replace(args.knowledge_model_type, 'kformers')
-                if 'embeddings' in key:
-                    key = key.replace('kformers.embeddings', 'kformers.k_embeddings')
-                    news_kformers_state_dict[key] = value
-                elif key in ["pre_classifier.weight", "pre_classifier.bias", "classifier.weight",
-                             "classifier.bias"]:  # from_pre
-                    pass
-                elif key in ["vocab_transform.weight", "vocab_transform.bias", "vocab_layer_norm.weight",
-                             "vocab_layer_norm.bias", "vocab_projector.weight",
-                             "vocab_projector.bias"]:  # 这是load checkpoint有的参数
-                    pass
-                else:
-                    j = key.split('kformers.transformer.layer.')[-1]
-                    j = j.split('.')[0]
-                    i = backbone_knowledge_dict_reverse[int(j)]
-                    key = key.replace('kformers.transformer.layer.%s' % j, 'kformers.encoder.layer.%s.k_layer' % i)
-                    news_kformers_state_dict[key] = value
-
-            # for k, v in news_kformers_state_dict.items():
-            #     print(k)
-
-            state_dict.update(news_kformers_state_dict)
-            kformers_model.load_state_dict(state_dict=state_dict)
-
-            # == 在这里设置K-module的参数更新不更新 ==
-            if not args.update_K_module:
-                for k, v in kformers_model.named_parameters():
-                    if 'k_' in k:
-                        v.requires_grad = False
-
-            # == 在这里设置K-module的参数更新不更新 ==
-        return kformers_model
-
-    else:
-        if args.post_trained_checkpoint is not None:
-            baseline_model = BaselineDownstreamModel.from_pretrained(args.post_trained_checkpoint,
-                                                                     config=config_backbone)
+            # print(key)
+            pass
+    # 加载distilbert的预训练参数，并把值赋给kformers
+    backbone_knowledge_dict_reverse = {v: k for k, v in args.backbone_knowledge_dict.items()}
+    knowledge_model_dict = k_model_class.from_pretrained(args.knowledge_model_name_or_path,
+                                                         config=config_k).state_dict()
+    for key, value in knowledge_model_dict.items():
+        key = key.replace(args.knowledge_model_type, 'kformers')
+        if 'embeddings' in key:
+            key = key.replace('kformers.embeddings', 'kformers.k_des_embeddings')
+            news_kformers_state_dict[key] = value
+        elif 'layer' in key:
+            j = key.split('kformers.transformer.layer.')[-1]
+            j = j.split('.')[0]
+            i = backbone_knowledge_dict_reverse[int(j)]
+            key = key.replace('kformers.transformer.layer.%s' % j, 'kformers.encoder.layer.%s.k_layer' % i)
+            news_kformers_state_dict[key] = value
         else:
-            baseline_model = BaselineDownstreamModel.from_pretrained(args.backbone_model_name_or_path, config=config_backbone)
-        return baseline_model
+            # print(key)
+            pass
+    kformer_dict.update(news_kformers_state_dict)
+    kformers_model.load_state_dict(state_dict=kformer_dict)
+
+    # == 在这里设置K-module的参数更新不更新 ==
+    t = backbone_knowledge_dict_reverse[5]
+    if not args.update_K_module:
+        for k, v in kformers_model.named_parameters():
+            if 'k_' in k and str(t) not in k:
+                v.requires_grad = False
+            # else:
+            #     print(v.requires_grad)
+
+    # not_update = ['backbone_', 'kformers.embeddings.', 'kformers.entity_embeddings.']
+    # for k, v in kformers_model.named_parameters():
+    #     for p in not_update:
+    #         if p in k:
+    #             v.requires_grad = False
+
+    # == 在这里设置K-module的参数更新不更新 ==
+    return args, kformers_model
+
+
+
+def load_kformers_from_kformers(args, k_config_class, k_model_class, KFormersDownstreamModel):
+    # 加载luke的参数
+    model_archive = ModelArchive.load("../checkpoints/luke_large_500k")
+    args.model_config = model_archive.config
+
+    args.model_config.num_labels = args.num_labels
+    args.model_config.vocab_size += 1
+    args.entity_vocab = model_archive.entity_vocab  # 不用这一步了吧
+    args.model_config.entity_vocab_size = 2
+    args.model_config.k_entity_vocab_size = len(args.entity_vocab)
+
+    args.experiment = NullLogger()
+
+    # load checkpoint
+    model_weights = torch.load('../checkpoints/luke_large_500k/pytorch_model.bin', map_location=args.device)
+
+    # word embedding
+    word_emb = model_weights["embeddings.word_embeddings.weight"]  # 50265*768
+    marker_emb = word_emb[args.tokenizer.convert_tokens_to_ids(["@"])[0]].unsqueeze(0)  # 1*768
+    model_weights["embeddings.word_embeddings.weight"] = torch.cat([word_emb, marker_emb])  # 后面拼一个marker_emb
+    args.tokenizer.add_special_tokens(dict(additional_special_tokens=[ENTITY_TOKEN]))
+    # ent_knowledge embedding
+    # entity_emb = model_weights["entity_embeddings.entity_embeddings.weight"]  # 50W*256
+    # model_weights['k_ent_embeddings.entity_embeddings.weight'] = entity_emb  # ???还要多拼一个吗？
+    # model_weights['k_ent_embeddings.entity_embedding_dense.weight'] = model_weights['entity_embeddings.entity_embedding_dense.weight']
+    # model_weights['k_ent_embeddings.LayerNorm.weight'] = model_weights['entity_embeddings.LayerNorm.weight']
+    # model_weights['k_ent_embeddings.LayerNorm.bias'] = model_weights['entity_embeddings.LayerNorm.bias']
+    # entity embedding
+    entity_emb = model_weights["entity_embeddings.entity_embeddings.weight"]  # 50W*256
+    mask_emb = entity_emb[args.entity_vocab[MASK_TOKEN]].unsqueeze(0)  # 1*256
+    model_weights["entity_embeddings.entity_embeddings.weight"] = torch.cat([entity_emb[:1], mask_emb])  # 2*256?
+
+    for num in range(args.model_config.num_hidden_layers):
+        for attr_name in ("weight", "bias"):
+            if f"encoder.layer.{num}.attention.self.w2e_query.{attr_name}" not in model_weights:
+                model_weights[f"encoder.layer.{num}.attention.self.w2e_query.{attr_name}"] = model_weights[
+                    f"encoder.layer.{num}.attention.self.query.{attr_name}"
+                ]
+            if f"encoder.layer.{num}.attention.self.e2w_query.{attr_name}" not in model_weights:
+                model_weights[f"encoder.layer.{num}.attention.self.e2w_query.{attr_name}"] = model_weights[
+                    f"encoder.layer.{num}.attention.self.query.{attr_name}"
+                ]
+            if f"encoder.layer.{num}.attention.self.e2e_query.{attr_name}" not in model_weights:
+                model_weights[f"encoder.layer.{num}.attention.self.e2e_query.{attr_name}"] = model_weights[
+                    f"encoder.layer.{num}.attention.self.query.{attr_name}"
+                ]
+
+    # =================================
+    config_k = k_config_class.from_pretrained(args.knowledge_model_name_or_path,
+                                              output_hidden_states=True)  # 这是DistillBert的config
+    kformers_model = KFormersDownstreamModel(args=args, config_k=config_k,
+                                             backbone_knowledge_dict=args.backbone_knowledge_dict)
+
+    kformer_dict = kformers_model.state_dict()  # KFormers的全部参数
+
+    news_kformers_state_dict = OrderedDict()
+    # 加载luke的预训练参数
+    for key, value in model_weights.items():
+        key = 'kformers.' + key
+        if 'embeddings' in key or 'pooler' in key:
+            news_kformers_state_dict[key] = value
+        elif 'encoder' in key:
+            i = key.split('kformers.encoder.layer.')[-1]
+            i = i.split('.')[0]
+            i = int(i)
+            key = key.replace('kformers.encoder.layer.%s' % i, 'kformers.encoder.layer.%s.backbone_layer' % i)
+            news_kformers_state_dict[key] = value
+        elif 'classifier.dense' in key:  # classifier的dense要不要初始化呢？
+            news_kformers_state_dict[key] = value
+        else:
+            # print(key)
+            pass
+    # 加载distilbert的预训练参数，并把值赋给kformers
+    k_model_weights = torch.load(os.path.join(args.post_trained_checkpoint, 'pytorch_model.bin'),  map_location='cpu')
+    for k, v in k_model_weights.items():
+        if 'k_des_embeddings' in k:
+            news_kformers_state_dict[k] = v
+        elif 'k_layer' in k:
+            news_kformers_state_dict[k] = v
+        elif 'map' in k:
+            news_kformers_state_dict[k] = v
+        else:
+            # print(k)
+            pass
+    kformer_dict.update(news_kformers_state_dict)
+    kformers_model.load_state_dict(state_dict=kformer_dict)
+
+
+    # == 在这里设置K-module的参数更新不更新 ==
+    if not args.update_K_module:
+        for k, v in kformers_model.named_parameters():
+            if 'k_' in k:
+                v.requires_grad = False
+
+    # == 在这里设置K-module的参数更新不更新 ==
+    return args, kformers_model
+
+
+
+
+# def load_kformers_from_kformers(args, k_config_class, k_model_class, KFormersDownstreamModel):
+#
+#
+#     # 加载luke的参数
+#     model_archive = ModelArchive.load("../checkpoints/luke_large_500k")
+#     args.model_config = model_archive.config
+#
+#     args.model_config.num_labels = args.num_labels
+#     args.model_config.vocab_size += 1
+#     args.entity_vocab = model_archive.entity_vocab  # 不用这一步了吧
+#     args.model_config.entity_vocab_size = 2
+#     args.model_config.k_entity_vocab_size = len(args.entity_vocab)
+#
+#     args.experiment = NullLogger()
+#
+#     # load checkpoint
+#     # model_weights = torch.load('../checkpoints/luke_large_500k/pytorch_model.bin', map_location=args.device)
+#     #
+#     # # word embedding
+#     # word_emb = model_weights["embeddings.word_embeddings.weight"]  # 50265*768
+#     # marker_emb = word_emb[args.tokenizer.convert_tokens_to_ids(["@"])[0]].unsqueeze(0)  # 1*768
+#     # model_weights["embeddings.word_embeddings.weight"] = torch.cat([word_emb, marker_emb])  # 后面拼一个marker_emb
+#     # args.tokenizer.add_special_tokens(dict(additional_special_tokens=[ENTITY_TOKEN]))
+#
+#
+#
+#     config_k = k_config_class.from_pretrained(args.knowledge_model_name_or_path, output_hidden_states=True)  # 这是DistillBert的config
+#     kformers_model = KFormersDownstreamModel(args=args, config_k=config_k,
+#                                              backbone_knowledge_dict=args.backbone_knowledge_dict)
+#     model_weights = torch.load(os.path.join(args.post_trained_checkpoint, 'pytorch_model.bin'),  map_location='cpu')
+#     # model_weights = torch.load('../checkpoints/luke_large_500k/pytorch_model.bin', map_location=args.device)
+#     for k in ['typing.weight', 'typing.bias']:
+#         model_weights.pop(k)
+#     kformers_model.load_state_dict(model_weights, strict=False)
+#
+#     # == 在这里设置K-module的参数更新不更新 ==
+#     if not args.update_K_module:
+#         for k, v in kformers_model.named_parameters():
+#             if 'k_' in k:
+#                 v.requires_grad = False
+#
+#     # == 在这里设置K-module的参数更新不更新 ==
+#     return args, kformers_model
 
 
 def do_train(args, model, train_dataset, val_dataset, test_dataset=None):
@@ -174,15 +330,21 @@ def do_train(args, model, train_dataset, val_dataset, test_dataset=None):
     train_sampler = RandomSampler(train_dataset) if args.local_rank == -1 else DistributedSampler(train_dataset)
     train_dataloader = DataLoader(train_dataset, sampler=train_sampler, batch_size=args.total_batch_size)
 
-    # param_optimizer = list(model.named_parameters())
-    param_optimizer = [(k, v) for k, v in model.named_parameters() if v.requires_grad]
+    param_optimizer = list(model.named_parameters())
+    # param_optimizer = [(k, v) for k, v in model.named_parameters() if v.requires_grad]
 
     no_decay = ['bias', 'LayerNorm.bias', 'LayerNorm.weight']
     optimizer_grouped_parameters = [
         {'params': [p for n, p in param_optimizer if not any(
-            nd in n for nd in no_decay)], 'weight_decay': args.weight_decay},
+            nd in n for nd in no_decay) and 'k_' in n], 'weight_decay': args.weight_decay, 'lr': args.learning_rate * 1.2},
+        {'params': [p for n, p in param_optimizer if not any(
+            nd in n for nd in no_decay) and 'k_' not in n], 'weight_decay': args.weight_decay,
+         'lr': args.learning_rate},
+
         {'params': [p for n, p in param_optimizer if any(
-            nd in n for nd in no_decay)], 'weight_decay': 0.0}
+            nd in n for nd in no_decay) and 'k_' in n], 'weight_decay': 0.0, 'lr': args.learning_rate * 1.2},
+        {'params': [p for n, p in param_optimizer if any(
+            nd in n for nd in no_decay) and 'k_' not in n], 'weight_decay': 0.0, 'lr': args.learning_rate},
     ]
     if args.max_steps > 0:
         t_total = args.max_steps
@@ -195,7 +357,7 @@ def do_train(args, model, train_dataset, val_dataset, test_dataset=None):
         warmup_steps = args.warmup_steps
     else:
         warmup_steps = t_total * 0.1
-    optimizer = AdamW(optimizer_grouped_parameters, lr=args.learning_rate)
+    optimizer = AdamW(optimizer_grouped_parameters, lr=args.learning_rate, betas=(0.9, 0.999))
     scheduler = get_linear_schedule_with_warmup(optimizer, warmup_steps, t_total, last_epoch=-1)
     if args.fp16:
         try:
@@ -225,6 +387,10 @@ def do_train(args, model, train_dataset, val_dataset, test_dataset=None):
     logger.info("  Total optimization steps = %d", t_total)
 
     global_step = 0
+
+    if args.local_rank in [-1, 0]:
+        tb_writer = SummaryWriter(log_dir="./finetune_runs/", purge_step=global_step)
+
     train_iterator = trange(args.epochs, desc="Epoch", disable=args.local_rank not in [-1, 0])
     set_seed(args)  # Added here for reproducebility (even between python 2 and 3)
     start_time = time.time()
@@ -239,48 +405,32 @@ def do_train(args, model, train_dataset, val_dataset, test_dataset=None):
             batch = tuple(t.to(args.device) for t in batch)
 
             if args.task_name in ['openentity', 'figer', 'fewrel', 'tacred']:
-                input_ids, attention_mask, token_type_ids, start_id = batch[0], batch[1], batch[2], batch[3]
-                k_input_ids, k_mask, k_attention_mask, k_token_type_ids = batch[-6], batch[-5], batch[-4], batch[-3]
-                labels = batch[-2]
-                entities = batch[-1]
-            else:
-                input_ids, attention_mask, token_type_ids = batch[0], batch[1], batch[2]
-                k_input_ids, k_mask, k_attention_mask, k_token_type_ids = batch[-6], batch[-5], batch[-4], batch[-3]
-                labels = batch[-2]
-                start_id = None
-                entities = batch[-1]
+                input_ids, input_mask, segment_ids, start_id = batch[0], batch[1], batch[2], batch[3]
+                ent_ids, ent_mask, ent_seg_ids, ent_pos_ids = batch[4], batch[5], batch[6], batch[7]
+                k_ent_ids, k_label = batch[8], batch[9]
+                des_input_ids, des_att_mask_one, des_segment_one, des_mask = batch[10], batch[11], batch[12], batch[13]
+                label = batch[-1]
 
-            if args.add_knowledge:
-                inputs = {"input_ids": input_ids,
-                          "attention_mask": attention_mask,
-                          "token_type_ids": token_type_ids if args.backbone_model_type in ['bert', 'unilm'] else None,
-                          "k_input_ids_list": k_input_ids,
-                          "k_mask": k_mask,
-                          "k_attention_mask_list": k_attention_mask,
-                          "k_token_type_ids_list": k_token_type_ids if args.knowledge_model_type in ['distilbert'] else None,
-                          "labels": labels,
-                          "start_id": start_id,
-                          "entities": entities,
-                          }
-            else:
-                inputs = {"input_ids": input_ids,
-                          "attention_mask": attention_mask,
-                          "token_type_ids": token_type_ids if args.backbone_model_type in ['bert', 'unilm'] else None,
-                          "k_input_ids_list": None,
-                          "k_mask": None,
-                          "k_attention_mask_list": None,
-                          "k_token_type_ids_list": None,
-                          "labels": labels,
-                          "start_id": start_id,
-                          "entities": entities,
-                          }
+            inputs = {"input_ids": input_ids,
+                      "attention_mask": input_mask,
+                      "token_type_ids": segment_ids,
 
-            # if args.task_name in ['openentity', 'figer', 'fewrel', 'tacred']:
-            #     inputs['start_id'] = start_id
-            # for k, v in model.named_parameters():
-            #     print(k, v.requires_grad) # True
-            # for k, v in model.state_dict().items():
-            #     print('k', v.requires_grad) # 都是False
+                      "start_id": start_id,
+                      "entity_ids": ent_ids,
+                      "entity_position_ids": ent_pos_ids,
+                      "entity_segment_ids": ent_seg_ids,
+                      "entity_attention_mask": ent_mask,
+
+                      "k_ent_ids": k_ent_ids,
+                      "k_label": k_label,
+
+                      "k_des_ids": des_input_ids,
+                      "k_des_mask_one": des_att_mask_one,
+                      "k_des_seg": des_segment_one,
+                      "k_des_mask": des_mask,
+                      "labels": label,
+                      }
+
             _, batch_loss = model(**inputs)
             if args.n_gpu > 1:
                 batch_loss = batch_loss.mean()  # mean() to average on multi-gpu parallel training
@@ -302,45 +452,90 @@ def do_train(args, model, train_dataset, val_dataset, test_dataset=None):
                 torch.cuda.empty_cache()
             if args.local_rank in [-1, 0] and args.logging_steps > 0 and global_step % args.logging_steps == 0:
                 logger.info("epoch {}, step {}, global_step {}, train_loss: {:.5f}".format(epoch, step + 1, global_step, loss))
+                # tb_writer.add_scalar('lr', scheduler.get_last_lr()[0], global_step)
+                # tb_writer.add_scalar('loss', loss, global_step)
             if args.local_rank in [-1, 0] and args.eval_steps > 0 and global_step > 0 and global_step % args.eval_steps == 0:
-                eval_results = do_eval(model, args, val_dataset, global_step)
-                test_results = do_eval(model, args, test_dataset, global_step)
+                eval_results, eval_loss = do_eval(model, args, val_dataset, global_step)
+                test_results, test_loss = do_eval(model, args, test_dataset, global_step)
+                tb_writer.add_scalar('lr', scheduler.get_last_lr()[0], global_step)
+                tb_writer.add_scalar('train_loss', loss, global_step)
+                tb_writer.add_scalar('dev_loss', eval_loss, global_step)
+                tb_writer.add_scalar('test_loss', test_loss, global_step)
                 t = eval_results[final_metric[args.task_name]]
                 if t > best_dev_result:  # f1
                     best_dev_result = eval_results[final_metric[args.task_name]]
-                    logger.info('epoch: {}, global step: {}, dev results: {}**'.format(epoch, global_step, eval_results))
-                    logger.info('epoch: {}, global step: {}, test results: {}'.format(epoch, global_step, test_results))
-                    print('epoch: {}, global step: {}, dev results: {}**'.format(epoch, global_step, eval_results))
-                    print('epoch: {}, global step: {}, test results: {}'.format(epoch, global_step, test_results))
+                    # logger.info('epoch: {}, global step: {}, dev results: {}**'.format(epoch, global_step, eval_results))
+                    # logger.info('epoch: {}, global step: {}, test results: {}'.format(epoch, global_step, test_results))
+                    print('epoch: ', epoch, 'global step: ', global_step, 'eval results: ', eval_results, '**')
+                    print('epoch: ', epoch, 'global step: ', global_step, 'test results: ', test_results, '**')
+
+                    # logging.info('Saving checkpoint...')
+                    # output_dir = os.path.join(args.output_dir, 'checkpoint-{}-{}'.format(global_step, test_results[final_metric[args.task_name]]))
+                    # if not os.path.exists(output_dir):
+                    #     os.makedirs(output_dir)
+                    # model_to_save = model.module if hasattr(model, 'module') else model  # Take care of distributed/parallel training
+                    # torch.save(model_to_save.state_dict(), os.path.join(output_dir, "pytorch_model.bin"))  # save checkpoint
+                    # logger.info("Save model checkpoint to %s", output_dir)
                 else:
-                    logger.info('epoch: {}, global step: {}, dev results: {}'.format(epoch, global_step, eval_results))
-                    logger.info('epoch: {}, global step: {}, test results: {}'.format(epoch, global_step, test_results))
-                    print('epoch: {}, global step: {}, dev results: {}'.format(epoch, global_step, eval_results))
-                    print('epoch: {}, global step: {}, test results: {}'.format(epoch, global_step, test_results))
+                    # logger.info('epoch: {}, global step: {}, dev results: {}'.format(epoch, global_step, eval_results))
+                    # logger.info('epoch: {}, global step: {}, test results: {}'.format(epoch, global_step, test_results))
+                    print('epoch: ', epoch, 'global step: ', global_step, 'eval results: ', eval_results)
+                    print('epoch: ', epoch, 'global step: ', global_step, 'test results: ', test_results)
+            if args.local_rank in [-1, 0] and args.save_steps > 0 and global_step > 0 and global_step % args.save_steps == 0:
+                # Save model checkpoint
+                logging.info('Saving checkpoint...')
+                output_dir = os.path.join(args.output_dir, 'checkpoint-{}'.format(global_step))
+                if not os.path.exists(output_dir):
+                    os.makedirs(output_dir)
+                model_to_save = model.module if hasattr(model, 'module') else model  # Take care of distributed/parallel training
+                torch.save(model_to_save.state_dict(), os.path.join(output_dir, "pytorch_model.bin"))  # save checkpoint
+                # torch.save(optimizer.state_dict(), os.path.join(output_dir, 'optimizer.bin'))  # save optimizer
+                # torch.save(scheduler.state_dict(), os.path.join(output_dir, 'scheduler.bin'))  # save scheduler
+                # torch.save(args, os.path.join(output_dir, 'training_args.bin'))  # save arguments
+                # torch.save(global_step, os.path.join(args.output_dir, 'global_step.bin'))
+                logger.info("Save model checkpoint, optimizer, scheduler, args, global_step to %s", output_dir)
+                # control the number of checkpoints to save
+                if (global_step / args.save_steps) > args.max_save_checkpoints:
+                    try:
+                        shutil.rmtree(os.path.join(args.output_dir, 'checkpoint-{}'.format(
+                            global_step - args.max_save_checkpoints * args.save_steps)))
+                    except OSError as e:
+                        logging.error(e)
             if 0 < args.max_steps < global_step:
                 epoch_iterator.close()
                 break
 
         # evaluate per epoch
         if args.local_rank in [-1, 0]:
-            eval_results = do_eval(model, args, val_dataset, global_step=epoch)
-            test_results = do_eval(model, args, test_dataset, global_step=epoch)
+            eval_results, _ = do_eval(model, args, val_dataset, global_step=epoch)
+            test_results, _ = do_eval(model, args, test_dataset, global_step=epoch)
             t = eval_results[final_metric[args.task_name]]
             if t > best_dev_result:  # f1
                 best_dev_result = eval_results[final_metric[args.task_name]]
-                logger.info('epoch: {},  dev results: {}**'.format(epoch, eval_results))
-                logger.info('epoch: {}, test results: {}'.format(epoch, test_results))
-                print('epoch: {}, dev results: {}**'.format(epoch, eval_results))
-                print('epoch: {}, test results: {}'.format(epoch, test_results))
+                print('epoch: ', epoch, 'global step: ', global_step, 'eval results: ', eval_results, '**')
+                print('epoch: ', epoch, 'global step: ', global_step, 'test results: ', test_results, '**')
             else:
-                logger.info('epoch: {}, dev results: {}'.format(epoch, eval_results))
-                logger.info('epoch: {}, test results: {}'.format(epoch, test_results))
-                print('epoch: {}, dev results: {}'.format(epoch, eval_results))
-                print('epoch: {}, test results: {}'.format(epoch, test_results))
+                # logger.info('epoch: {}, global step: {}, dev results: {}'.format(epoch, global_step, eval_results))
+                # logger.info('epoch: {}, global step: {}, test results: {}'.format(epoch, global_step, test_results))
+                print('epoch: ', epoch, 'global step: ', global_step, 'eval results: ', eval_results)
+                print('epoch: ', epoch, 'global step: ', global_step, 'test results: ', test_results)
+
+            # logging.info('Saving checkpoint...')
+            # output_dir = os.path.join(args.output_dir, 'checkpoint-{}-{}'.format(global_step, test_results[
+            #     final_metric[args.task_name]]))
+            # if not os.path.exists(output_dir):
+            #     os.makedirs(output_dir)
+            # model_to_save = model.module if hasattr(model,
+            #                                         'module') else model  # Take care of distributed/parallel training
+            # torch.save(model_to_save.state_dict(),
+            #            os.path.join(output_dir, "pytorch_model.bin"))  # save checkpoint
+            # logger.info("Save model checkpoint to %s", output_dir)
 
         if 0 < args.max_steps < global_step:
             train_iterator.close()
             break
+    if args.local_rank in [-1, 0]:
+        tb_writer.close()
     logging.info("train time:{}".format(time.time() - start_time))
 
 
@@ -350,6 +545,7 @@ def do_eval(model, args, val_dataset, global_step):
 
     preds = None
     out_label_ids = None
+    total_loss = 0.0
     eval_iterator = tqdm(val_dataloader, desc="Evaluating", disable=args.local_rank not in [-1, 0])
     for step, batch in enumerate(eval_iterator):
 
@@ -361,47 +557,34 @@ def do_eval(model, args, val_dataset, global_step):
         with torch.no_grad():
 
             if args.task_name in ['openentity', 'figer', 'fewrel', 'tacred']:
-                input_ids, attention_mask, token_type_ids, start_id = batch[0], batch[1], batch[2], batch[3]
-                k_input_ids, k_mask, k_attention_mask, k_token_type_ids = batch[-6], batch[-5], batch[-4], batch[-3]
-                labels = batch[-2]
-                entities = batch[-1]
-            else:
-                input_ids, attention_mask, token_type_ids = batch[0], batch[1], batch[2]
-                k_input_ids, k_mask, k_attention_mask, k_token_type_ids = batch[-6], batch[-5], batch[-4], batch[-3]
-                labels = batch[-2]
-                start_id = None
-                entities = batch[-1]
+                input_ids, input_mask, segment_ids, start_id = batch[0], batch[1], batch[2], batch[3]
+                ent_ids, ent_mask, ent_seg_ids, ent_pos_ids = batch[4], batch[5], batch[6], batch[7]
+                k_ent_ids, k_label = batch[8], batch[9]
+                des_input_ids, des_att_mask_one, des_segment_one, des_mask = batch[10], batch[11], batch[12], batch[13]
+                labels = batch[-1]
 
-            if args.add_knowledge:
-                inputs = {"input_ids": input_ids,
-                          "attention_mask": attention_mask,
-                          "token_type_ids": token_type_ids if args.backbone_model_type in ['bert', 'unilm'] else None,
-                          "k_input_ids_list": k_input_ids,
-                          "k_mask": k_mask,
-                          "k_attention_mask_list": k_attention_mask,
-                          "k_token_type_ids_list": k_token_type_ids if args.knowledge_model_type in [
-                              'distilbert'] else None,
-                          "labels": None,
-                          "start_id": start_id,
-                          'entities': entities
-                          }
-            else:
-                inputs = {"input_ids": input_ids,
-                          "attention_mask": attention_mask,
-                          "token_type_ids": token_type_ids if args.backbone_model_type in ['bert', 'unilm'] else None,
-                          "k_input_ids_list": None,
-                          "k_mask": None,
-                          "k_attention_mask_list": None,
-                          "k_token_type_ids_list": None,
-                          "labels": None,
-                          "start_id": start_id,
-                          'entities': entities
-                          }
+            inputs = {"input_ids": input_ids,
+                      "attention_mask": input_mask,
+                      "token_type_ids": segment_ids,
 
-            # if args.task_name in ['openentity', 'figer', 'fewrel', 'tacred']:
-            #     inputs['start_id'] = start_id
+                      "start_id": start_id,
+                      "entity_ids": ent_ids,
+                      "entity_position_ids": ent_pos_ids,
+                      "entity_segment_ids": ent_seg_ids,
+                      "entity_attention_mask": ent_mask,
+
+                      "k_ent_ids": k_ent_ids,
+                      "k_label": k_label,
+
+                      "k_des_ids": des_input_ids,
+                      "k_des_mask_one": des_att_mask_one,
+                      "k_des_seg": des_segment_one,
+                      "k_des_mask": des_mask,
+                      "labels": None,
+                      }
 
             logits = model(**inputs)
+            # total_loss += loss.item()
             if preds is None:
                 preds = logits.detach().cpu().numpy()
                 out_label_ids = labels.detach().cpu().numpy()
@@ -415,7 +598,7 @@ def do_eval(model, args, val_dataset, global_step):
         preds = np.argmax(preds, axis=1)
 
     result = compute_metrics(args.task_name, preds, out_label_ids)
-    return result
+    return result, total_loss
 
 
 def set_seed(args):
@@ -430,16 +613,12 @@ def main():
     args = parse_args()
     if args.task_name in ['openentity', 'figer']:
         from KFormers_roberta_distilbert_modeling import KFormersForEntityTyping as KFormersDownstreamModel
-        from KFormers_roberta_distilbert_modeling import RobertaForEntityTyping as BaselineDownstreamModel
     elif args.task_name in ['tacred', 'fewrel']:
         from KFormers_roberta_distilbert_modeling import KFormersForRelationClassification as KFormersDownstreamModel
-        from KFormers_roberta_distilbert_modeling import RobertaForRelationClassification as BaselineDownstreamModel
     elif args.task_name in ['sst2', 'eem']:
-        from KFormers_roberta_distilbert_modeling import RobertaForSequenceClassification as BaselineDownstreamModel
         from KFormers_roberta_distilbert_modeling import KFormersForSequenceClassification as KFormersDownstreamModel
     else:
         KFormersDownstreamModel = None
-        BaselineDownstreamModel = None
 
     if not args.add_knowledge and args.update_K_module:
         raise ValueError("when knowledge is not used, K-module should be closed")
@@ -471,32 +650,41 @@ def main():
         args.backbone_model_type]
     k_config_class, k_model_class, k_tokenizer_class = KNOWLEDGE_MODEL_CLASSES[args.knowledge_model_type]
 
-    k_config_class.post_trained_checkpoint_embedding = args.post_trained_checkpoint_embedding
+    # k_config_class.post_trained_checkpoint_embedding = args.post_trained_checkpoint_embedding
 
     backbone_tokenizer = backbone_tokenizer_class.from_pretrained(args.backbone_model_name_or_path)
     knowledge_tokenizer = k_tokenizer_class.from_pretrained(args.knowledge_model_name_or_path)
 
+    args.tokenizer = backbone_tokenizer
+
     # get num_label
-    if args.task_name == 'tacred':
-        processor = processors[args.task_name]()
-    else:
-        processor = processors[args.task_name]()
-    # processor = processors[args.task_name](tokenizer=backbone_tokenizer, k_tokenizer=knowledge_tokenizer)
+
+    processor = processors[args.task_name]()
     label_list = processor.get_labels()
     num_labels = len(label_list)
     args.num_labels = num_labels
     args.output_mode = output_modes[args.task_name]
 
-    model = load_kformers(args, backbone_config_class, k_config_class, backbone_model_class, k_model_class,
-                          KFormersDownstreamModel, BaselineDownstreamModel)
+    if args.post_trained_checkpoint is not None:
+        logging.info('Load checkpoints from post-traineds')
+        args, model = load_kformers_from_kformers(args, k_config_class, k_model_class, KFormersDownstreamModel)
+    else:
+        args, model = load_kformers_from_backbone_knowledge(args, k_config_class, k_model_class, KFormersDownstreamModel)
     if args.local_rank == 0:
         torch.distributed.barrier()  # Make sure only the first process in distributed training will download model & vocab
     logging.info('loading backbone model: {}, knowledge module model: {}'.format(args.backbone_model_type,
                                                                                  args.knowledge_model_type))
     model.to(device)
 
-    logger.info("Training/evaluation parameters %s", args)
-    print("Training/evaluation parameters %s", args)
+    # logger.info("Training/evaluation parameters %s", args)
+
+    print('backbone_seq_length=', args.backbone_seq_length, ', knowledge_seq_length=', args.knowledge_seq_length,
+          ', max_ent_num=', args.max_ent_num, ', max_des_num=', args.max_des_num, ', train_batch_size=', args.train_batch_size,
+          ', learning_rate=', args.learning_rate, ', alpha, beta=', args.alpha, args.beta, ', seed=', args.seed)
+    logging.info('backbone_seq_length=', args.backbone_seq_length, 'knowledge_seq_length=', args.knowledge_seq_length,
+          'max_ent_num=', args.max_ent_num, 'max_des_num=', args.max_des_num, 'train_batch_size=',
+          args.train_batch_size,
+          'learning_rate=', args.learning_rate, 'alpha, beta=', args.alpha, args.beta, 'seed=', args.seed)
     # ## Training
     if args.mode == 'train':
         from data_utils import load_and_cache_examples
