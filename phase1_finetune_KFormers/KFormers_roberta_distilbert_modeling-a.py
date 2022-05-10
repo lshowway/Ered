@@ -343,22 +343,17 @@ class KFormersForEntityTyping(nn.Module):
         super(KFormersForEntityTyping, self).__init__()
         self.num_labels = args.num_labels
         self.ent_num = args.max_ent_num
-
         self.alpha = args.alpha
-        self.beta = args.beta
 
         args.add_pooling_layer = False
         config = args.model_config
         self.config = config
 
         self.kformers = KFormersModel(config, config_k, backbone_knowledge_dict)
-        # config.in_hidden_size = config.hidden_size
-
+        config.in_hidden_size = config.hidden_size
 
         self.dropout = nn.Dropout(config.hidden_dropout_prob)
         self.typing = nn.Linear(config.hidden_size, self.num_labels)
-
-        self.aug_pl_fc = nn.Linear(config.hidden_size, 1)
 
         self.apply(self.init_weights)
 
@@ -409,11 +404,8 @@ class KFormersForEntityTyping(nn.Module):
 
             aux_loss = F.binary_cross_entropy_with_logits(aux_logits.view(-1), labels.view(-1).type_as(aux_logits))
 
-            # 第二个辅助loss：区分污染和增强
-            aug_pl_logits = self.aug_pl_fc(k_ent_output + anchor_vec.unsqueeze(1))  # batch K d -> batch K/batch K C
-            aug_pl_loss = nn.CrossEntropyLoss()(aug_pl_logits.view(input_ids.size(0), -1), k_label.view(-1))
 
-            return logits + aux_logits, main_loss + self.alpha * aux_loss + self.beta * aug_pl_loss
+            return logits + aux_logits, main_loss + self.alpha * aux_loss
 
 
 
@@ -423,7 +415,6 @@ class KFormersForRelationClassification(nn.Module):
         self.num_labels = args.num_labels
         self.ent_num = args.max_ent_num
         self.alpha = args.alpha
-        self.beta = args.beta
 
         args.add_pooling_layer = False
         config = args.model_config
@@ -433,8 +424,6 @@ class KFormersForRelationClassification(nn.Module):
 
         self.dropout = nn.Dropout(config.hidden_dropout_prob)
         self.classifier = nn.Linear(args.model_config.hidden_size * 2, self.num_labels, False)
-
-        self.aug_pl_fc = nn.Linear(config.hidden_size, 1)
 
         self.apply(self.init_weights)
 
@@ -485,18 +474,12 @@ class KFormersForRelationClassification(nn.Module):
         aux_logits = self.classifier(t.view(t.size(0), -1))  # ENT表征+true_e
 
 
-
         if labels is None:
-            return logits + aux_logits
+            return logits + aux_logits #+ aug_pl_logits
         else:
             main_loss = F.cross_entropy(logits, labels)
             aux_loss = F.cross_entropy(aux_logits, labels)
 
-            # 第二个辅助loss：区分污染和增强
-            anchor_vec = torch.mean(anchor_vec, dim=1, keepdim=True) # batch 1 d
-            aug_pl_logits = self.aug_pl_fc(k_ent_output + anchor_vec)  # batch K d -> batch K/batch K C
-            aug_pl_loss = F.cross_entropy(aug_pl_logits.view(input_ids.size(0), -1), k_label.view(-1))
-
-            return logits + aux_logits, main_loss + self.alpha * aux_loss + self.beta * aug_pl_loss
+            return logits + aux_logits, main_loss + self.alpha * aux_loss
 
 

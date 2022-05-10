@@ -299,9 +299,7 @@ def fewrel_metric(pred_result, labels):
     num_correct_labels = 0
 
     for label, prediction in zip(labels, pred_result):
-        # if prediction != 0:
         num_predicted_labels += 1
-        # if label != 0:
         num_gold_labels += 1
         if prediction == label:
             num_correct_labels += 1

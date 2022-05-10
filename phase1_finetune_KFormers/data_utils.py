@@ -19,6 +19,10 @@ from torch.utils.data import TensorDataset
 logger = logging.getLogger(__name__)
 
 
+HEAD_TOKEN = "[HEAD]"
+TAIL_TOKEN = "[TAIL]"
+
+
 def load_and_cache_examples(args, processor, tokenizer, k_tokenizer, dataset_type, evaluate=False):
     # dataset_type: train, dev, test
     if args.local_rank not in [-1, 0] and not evaluate:
@@ -58,9 +62,10 @@ def load_and_cache_examples(args, processor, tokenizer, k_tokenizer, dataset_typ
                                                                   tokenizer, k_tokenizer,
                                                                   )
         elif input_mode == "entity_entity_sentence":
-            features = convert_examples_to_features_relation_classification(args, examples,
+            features = convert_examples_to_features_relation_classification(args, examples, args.entity_vocab,
                                                                             args.backbone_seq_length, args.knowledge_seq_length,
-                                                                            args.max_num_entity, tokenizer, k_tokenizer,)
+                                                                            args.max_ent_num, args.max_des_num, 30,
+                                                                            tokenizer, k_tokenizer,)
         else:
             features = None
         if args.local_rank in [-1, 0]:
@@ -357,151 +362,142 @@ def convert_examples_to_features_single_sentence(examples, qid_file,
     return features
 
 
-def convert_examples_to_features_relation_classification(args, examples,
-                                                         origin_seq_length, knowledge_seq_length, max_num_entity,
-                                                        tokenizer, k_tokenizer,
-                                                        pad_on_left=False,
-                                                        mask_padding_with_zero=True):
+def convert_examples_to_features_relation_classification(args, examples, entity_vocab,
+                                                         origin_seq_length, knowledge_seq_length,
+                                                         max_ent_num, max_des_num, max_mention_length,
+                                                         tokenizer, k_tokenizer,):
 
-    QID_entityName_dict, QID_description_dict = load_description(args.qid_file)
-    entity_vocab = get_entity_vocab(args.entity_vocab_file)
+    _, QID_description_dict = load_description(args.qid_file)
 
     features = []
     for (ex_index, example) in enumerate(examples):
         if ex_index % 10000 == 0:
             logger.info("Writing example %d of %d" % (ex_index, len(examples)))
         # ==== backbone ====
-        neighbours = [x[0] for x in example.neighbour]
-
-        entities = [entity_vocab.get(qid, len(entity_vocab)) for qid in neighbours]
-        entities = entities[: max_num_entity] + [len(entity_vocab)] * (max_num_entity - len(entities))
-
         text_a = example.text_a
-        subj_start, subj_end, obj_start, obj_end = example.text_b
-        # relation = example.label
-        if subj_start < obj_start:
-            # sub, and then obj (有空格啊，妈的)
-            before_sub = text_a[:subj_start].strip()
-            tokens = tokenizer.tokenize(before_sub)
-            subj_special_start = len(tokens)
-            tokens += ['@']
-            sub = text_a[subj_start:subj_end + 1].strip()
-            tokens += tokenizer.tokenize(sub)
-            tokens += ['@']
-            between_sub_obj = text_a[subj_end + 1: obj_start].strip()
-            tokens += tokenizer.tokenize(between_sub_obj)
-            obj_special_start = len(tokens)
-            tokens += ['#']
-            obj = text_a[obj_start:obj_end + 1].strip()
-            tokens += tokenizer.tokenize(obj)
-            tokens += ['#']
-            after_obj = text_a[obj_end + 1:].strip()
-            tokens += tokenizer.tokenize(after_obj)
-        else:
-            # ojb, and then sub
-            before_obj = text_a[:obj_start].strip()
-            tokens = tokenizer.tokenize(before_obj)
-            obj_special_start = len(tokens)
-            tokens += ['#']
-            obj = text_a[obj_start: obj_end + 1].strip()
-            tokens += tokenizer.tokenize(obj)
-            tokens += ['#']
-            between_obj_sub = text_a[obj_end + 1: subj_start].strip()
-            tokens += tokenizer.tokenize(between_obj_sub)
-            subj_special_start = len(tokens)
-            tokens += ['@']
-            sub = text_a[subj_start:subj_end + 1].strip()
-            tokens += tokenizer.tokenize(sub)
-            tokens += ['@']
-            after_sub = text_a[subj_end + 1:].strip()
-            tokens += tokenizer.tokenize(after_sub)
+        start_0, end_0, start_1, end_1 = example.text_b
+        # sub, and then obj (有空格啊，妈的)
+        before_sub = text_a[:start_0].strip()
+        tokens = [tokenizer.cls_token] + tokenizer.tokenize(before_sub)
+        sub_start = len(tokens)
+        tokens += [HEAD_TOKEN]
+        sub = text_a[start_0: end_0 + 1].strip()
+        tokens += tokenizer.tokenize(sub)
+        tokens += [HEAD_TOKEN]
+        sub_end = len(tokens)
+        between_sub_obj = text_a[end_0 + 1: start_1].strip()
+        tokens += tokenizer.tokenize(between_sub_obj)
+        obj_start = len(tokens)
+        tokens += [TAIL_TOKEN]
+        obj = text_a[start_1: end_1 + 1].strip()
+        tokens += tokenizer.tokenize(obj)
+        tokens += [TAIL_TOKEN]
+        obj_end = len(tokens)
+        after_obj = text_a[end_1 + 1:].strip()
+        tokens += tokenizer.tokenize(after_obj) + [tokenizer.sep_token]
 
-        tokens = [tokenizer.cls_token] + tokens + [tokenizer.sep_token]
         tokens = tokens[: origin_seq_length]
-
-        subj_special_start += 1 # because of cls_token
-        obj_special_start += 1
 
         segment_ids = [0] * len(tokens)
         input_ids = tokenizer.convert_tokens_to_ids(tokens)
-        # The mask has 1 for real tokens and 0 for padding tokens. Only real
-        # tokens are attended to.
-        input_mask = [1 if mask_padding_with_zero else 0] * len(input_ids)
-
-        # Zero-pad up to the sequence length.
+        input_mask = [1] * len(input_ids)
+        # pad
         padding_length = origin_seq_length - len(input_ids)
-        if pad_on_left:
-            input_ids = ([tokenizer.pad_token_id] * padding_length) + input_ids
-            input_mask = ([0 if mask_padding_with_zero else 1] * padding_length) + input_mask
-            segment_ids = ([tokenizer.pad_token_type_id] * padding_length) + segment_ids
-        else:
-            input_ids = input_ids + ([tokenizer.pad_token_id] * padding_length)
-            input_mask = input_mask + ([0 if mask_padding_with_zero else 1] * padding_length)
-            segment_ids = segment_ids + ([tokenizer.pad_token_type_id] * padding_length)
+        input_ids = input_ids + ([tokenizer.pad_token_id] * padding_length)
+        input_mask = input_mask + ([0] * padding_length)
+        segment_ids = segment_ids + ([tokenizer.pad_token_type_id] * padding_length)
         assert len(input_ids) == origin_seq_length
         assert len(input_mask) == origin_seq_length
         assert len(segment_ids) == origin_seq_length
-
-        if ex_index < 10:
-            logger.info("*** ==> Example ***")
-            logger.info("guid: %s" % (example.guid))
-            logger.info("tokens: %s" % " ".join(
-                [str(x) for x in tokens]))
-            logger.info("input_ids: %s" % " ".join([str(x) for x in input_ids]))
-            logger.info("input_mask: %s" % " ".join([str(x) for x in input_mask]))
-            logger.info("segment_ids: %s" % " ".join([str(x) for x in segment_ids]))
-            logger.info("label: {}".format(example.label))
+        # label
+        label_id = example.label
         # sure that sub & obj are included in the sequence
-        if subj_special_start > origin_seq_length - 1:
-            # subj_special_start = origin_seq_length - 10
-            subj_special_start = 0
-        if obj_special_start > origin_seq_length - 1:
-            # obj_special_start = origin_seq_length - 10
-            obj_special_start = 0
+        if sub_start > origin_seq_length - 1:
+            sub_start = 0
+        if obj_start > origin_seq_length - 1:
+            obj_start = 0
+        if sub_end > origin_seq_length - 1:
+            sub_end = -1
+        if obj_end > origin_seq_length - 1:
+            obj_end = -1
         # the sub_special_start_id is an array, where the idx of start id is 1, other position is 0.
         subj_special_start_id = np.zeros(origin_seq_length)
         obj_special_start_id = np.zeros(origin_seq_length)
-        subj_special_start_id[subj_special_start] = 1
-        obj_special_start_id[obj_special_start] = 1
-        # ==== backbone ====
-        # ==== knowledge ====
-        neighbour_one, neighbour_att_mask_one, neighbour_segment_one = [], [], []
-        NULL_description = "The entity does not have description"
-        neighbours = [QID_description_dict.get(qid, NULL_description) for qid in neighbours]
-        neighbours_mask = [1] * min(max_num_entity, len(neighbours)) + [0] * (
-                    max_num_entity - min(max_num_entity, len(neighbours)))
-        neighbours = neighbours[: max_num_entity] + ["PAD DESCRIPTION"] * (max_num_entity - len(neighbours))
-        for x in neighbours:
+        subj_special_start_id[sub_start] = 1
+        obj_special_start_id[obj_start] = 1
+        # entity identifier
+        entity_identifier_ids = [1, 2]
+        entity_identifier_segment_ids = [0, 0]
+        entity_identifier_attention_mask = [1, 1]
+        entity_identifier_position_ids = []
+        for span_name in ([sub_start, sub_end], [obj_start, obj_end]):
+            start, end = span_name
+            position_ids = list(range(start, end))[:max_mention_length]
+            position_ids += [-1] * (max_mention_length - end + start)
+            entity_identifier_position_ids.append(position_ids)
+        # 处理knowledge：entity
+        k_ent_ids = [entity_vocab[ent[0]] for ent in example.entities if ent[0] in entity_vocab]
+        k_ent_ids = k_ent_ids[: max_ent_num]
+        k_ent_scores = [ent[-1] for ent in example.entities if ent[0] in entity_vocab]
+        k_ent_scores = k_ent_scores[: max_ent_num]
+        if len(k_ent_ids) == 0:
+            k_ent_ids = [entity_vocab[MASK_TOKEN]]
+            k_ent_scores = [5]
+        k_ent_ids += random.sample(list(range(4, len(entity_vocab))), (max_ent_num - len(k_ent_ids)))
+        k_ent_scores += [-1] * (max_ent_num - len(k_ent_scores))
+        tmp = list(zip(k_ent_ids, k_ent_scores))
+        random.shuffle(tmp)
+        k_ent_ids, k_ent_scores = zip(*tmp)
+        k_ent_ids, k_ent_scores = list(k_ent_ids), list(k_ent_scores)
+        k_label = k_ent_scores.index(max(k_ent_scores))
+        # 处理knowledge：description
+        des_input_ids, des_att_mask_one, des_segment_one = [], [], []
+        k_ent_qids = [ent[0] for ent in example.entities]
+        k_des = [QID_description_dict[qid] for qid in k_ent_qids if qid in QID_description_dict]
+        k_des = k_des[: max_des_num]
+
+        des_mask = [1] * len(k_des) + [0] * (max_des_num - len(k_des))
+        k_des = k_des[: max_des_num] + [k_tokenizer.pad_token] * (max_des_num - len(k_des))
+        for x in k_des:
             x = k_tokenizer.tokenize(x)
             x = [k_tokenizer.cls_token] + x + [k_tokenizer.sep_token]
             x = x[: knowledge_seq_length]
             x_1 = k_tokenizer.convert_tokens_to_ids(x)
-            x_2 = [1 if mask_padding_with_zero else 0] * len(x_1)  # input_mask
-            x_3 = [0] * len(x)
+            x_2 = [1] * len(x_1)  # input_mask
+            x_3 = [0] * len(x)  # segment
+            # pad
             padding_length = knowledge_seq_length - len(x)
-            if pad_on_left:
-                x_1 = ([k_tokenizer.pad_token_id] * padding_length) + x_1
-                x_2 = ([0 if mask_padding_with_zero else 1] * padding_length) + x_2
-                x_3 = ([k_tokenizer.pad_token_type_id] * padding_length) + x_3
-            else:
-                x_1 = x_1 + ([k_tokenizer.pad_token_id] * padding_length)
-                x_2 = x_2 + ([0 if mask_padding_with_zero else 1] * padding_length)
-                x_3 = x_3 + ([k_tokenizer.pad_token_type_id] * padding_length)
+            x_1 = x_1 + ([k_tokenizer.pad_token_id] * padding_length)
+            x_2 = x_2 + ([0] * padding_length)
+            x_3 = x_3 + ([k_tokenizer.pad_token_type_id] * padding_length)
             assert len(x_1) == knowledge_seq_length
             assert len(x_2) == knowledge_seq_length
             assert len(x_3) == knowledge_seq_length
-            neighbour_one.append(x_1)
-            neighbour_att_mask_one.append(x_2)
-            neighbour_segment_one.append(x_3)
-        # print(len(neighbour_one))  # 如何处理多个entity，多个description
-        if ex_index < 10:
-            logger.info("*** Example k***")
-            logger.info("tokens_k: %s" % " ".join([str(x_) for x_ in neighbours]))
-            logger.info("neighbours_mask: %s" % " ".join([str(x_) for x_ in neighbours_mask]))
-            logger.info("input_ids_k: %s" % " ".join([str(x) for x in neighbour_one]))
-            logger.info("input_mask_k: %s" % " ".join([str(x) for x in neighbour_att_mask_one]))
-            logger.info("segment_ids_k: %s" % " ".join([str(x) for x in neighbour_segment_one]))
-            logger.info("entities: %s" % " ".join([str(x) for x in entities]))
+            des_input_ids.append(x_1)
+            des_att_mask_one.append(x_2)
+            des_segment_one.append(x_3)
+        if ex_index < 5:
+            logger.info("*** Example ***")
+            logger.info("guid: %s" % (example.guid))
+            logger.info("tokens: %s" % " ".join([str(x) for x in tokens]))
+            logger.info("input_ids: %s" % " ".join([str(x) for x in input_ids]))
+            logger.info("input_mask: %s" % " ".join([str(x) for x in input_mask]))
+            logger.info("segment_ids: %s" % " ".join([str(x) for x in segment_ids]))
+            logger.info("label: {}".format(label_id))
+            logger.info("start_id: {}".format((sub_start, obj_start)))
+
+            logger.info("ent_ids: %s" % " ".join([str(x_) for x_ in entity_identifier_ids]))
+            logger.info("ent_mask: %s" % " ".join([str(x_) for x_ in entity_identifier_attention_mask]))
+            logger.info("ent_seg_ids: %s" % " ".join([str(x_) for x_ in entity_identifier_segment_ids]))
+            logger.info("ent_pos_ids: %s" % " ".join([str(x_) for x_ in entity_identifier_position_ids]))
+
+            logger.info("k_ent_ids: %s" % " ".join([str(x_) for x_ in k_ent_ids]))
+            logger.info("k_label: %s" % k_label)
+
+            logger.info("des_input_ids: %s" % " ".join([str(x_) for x_ in des_input_ids]))
+            logger.info("des_att_mask_one: %s" % " ".join([str(x) for x in des_att_mask_one]))
+            logger.info("des_segment_one: %s" % " ".join([str(x) for x in des_segment_one]))
+            logger.info("des_mask: %s" % " ".join([str(x) for x in des_mask]))
         # ==== knowledge ====
 
         features.append(
@@ -510,17 +506,25 @@ def convert_examples_to_features_relation_classification(args, examples,
                           segment_ids=segment_ids,
                           label_id=example.label,
                           start_id=(subj_special_start_id, obj_special_start_id),
-                          k_input_ids=neighbour_one,
-                          k_mask=neighbours_mask,  # 表示有几条有效description
-                          k_input_mask=neighbour_att_mask_one,
-                          k_segment_ids=neighbour_segment_one,  # distilBert没有使用token_type_embedding
-                          entities=entities
+
+                          ent_ids=entity_identifier_ids,
+                          ent_mask=entity_identifier_attention_mask,
+                          ent_seg_ids=entity_identifier_segment_ids,
+                          ent_pos_ids=entity_identifier_position_ids,
+
+                          k_ent_ids=k_ent_ids,
+                          k_label=k_label,
+
+                          des_input_ids=des_input_ids,
+                          des_att_mask_one=des_att_mask_one,
+                          des_segment_one=des_segment_one,
+                          des_mask=des_mask,  # 表示有几条有效description
                           ))
 
     return features
 
 
-def convert_examples_to_features_entity_typing(args, examples,entity_vocab,
+def convert_examples_to_features_entity_typing(args, examples, entity_vocab,
                                                origin_seq_length, knowledge_seq_length, max_ent_num, max_des_num, max_mention_length,
                                                tokenizer, k_tokenizer,
                                                ):
@@ -566,9 +570,6 @@ def convert_examples_to_features_entity_typing(args, examples,entity_vocab,
         entity_identifier_position_ids = list(range(start, end))[:max_mention_length]
         entity_identifier_position_ids += [-1] * (max_mention_length - end + start)
         entity_identifier_position_ids = [entity_identifier_position_ids, [-1] * max_mention_length]  # ？
-
-        # ==== backbone ====
-        # ==== knowledge ====
         # 处理knowledge：entity
         k_ent_ids = [entity_vocab[ent[0]] for ent in example.entities if ent[0] in entity_vocab]
         k_ent_ids = k_ent_ids[: max_ent_num]
@@ -587,7 +588,8 @@ def convert_examples_to_features_entity_typing(args, examples,entity_vocab,
         # 处理knowledge：description
         des_input_ids, des_att_mask_one, des_segment_one = [], [], []
 
-        k_ent_qids = [ent[0] for ent in example.entities if ent[0] in entity_vocab]
+        # k_ent_qids = [ent[0] for ent in example.entities if ent[0] in entity_vocab]
+        k_ent_qids = [ent[0] for ent in example.entities]
         k_des = [QID_description_dict[qid] for qid in k_ent_qids if qid in QID_description_dict]
         k_des = k_des[: max_des_num]
 
@@ -818,7 +820,7 @@ class FigerProcessor(DataProcessor):
                 label[label_list.index(item)] = 1
             neighbour = line['ents']
             examples.append(
-                InputExample(guid=guid, text_a=text_a, text_b=text_b, neighbour=neighbour, label=label))
+                InputExample(guid=guid, text_a=text_a, text_b=text_b, entities=neighbour, label=label))
         return examples
 
 
@@ -861,29 +863,30 @@ class TACREDProcessor(DataProcessor):
         no_relation_number = label_set['NA']
         for (i, line) in enumerate(lines):
             guid = i
-            # text_a: tokenized words
             text_a = line['text']
-            # text_b: other information
-            # it is: sub_start, sub_end, obj_start, obj_end
             for x in line['ents']:
                 if x[1] == 1:
                     x[1] = 0
-            text_b = (line["ents"][0][1], line["ents"][0][2], line["ents"][1][1], line["ents"][1][2])
+
+            t1 = (line["ents"][0][1], line["ents"][0][2])
+            t2 = (line["ents"][1][1], line["ents"][1][2])
+
+            if t1[0] < t2[0]:
+                sub = t1
+                obj = t2
+            else:
+                sub = t2
+                obj = t1
+
+            text_b = (sub[0], sub[1], obj[0], obj[1])
+
             label = line['label']
             label = label_set[label]
             neighbour = line['ann']
             if neighbour == "None" or neighbour is None:
                 print(line)
-            # if label == no_relation_number and dataset_type == 'train':
-            #     NA_count += 1
-            #     if NA_count < 40000:
-            #         examples.append(
-            #             InputExample(guid=guid, text_a=text_a, text_b=text_b, neighbour=neighbour, label=label))
-            #     else:
-            #         continue
-            # else:
             examples.append(
-                InputExample(guid=guid, text_a=text_a, text_b=text_b, neighbour=neighbour, label=label))
+                InputExample(guid=guid, text_a=text_a, text_b=text_b, entities=neighbour, label=label))
         print('NA_count ', NA_count)
         return examples
 
@@ -924,7 +927,7 @@ class FewrelProcessor(DataProcessor):
             label = line['label']
             label = label_map[label]
             examples.append(
-                InputExample(guid=guid, text_a=text_a, text_b=text_b, neighbour=neighbour, label=label))
+                InputExample(guid=guid, text_a=text_a, text_b=text_b, entities=neighbour, label=label))
         return examples
 
 
@@ -1063,6 +1066,8 @@ PAD_TOKEN = "[PAD]"
 UNK_TOKEN = "[UNK]"
 MASK_TOKEN = "[MASK]"
 ENTITY_TOKEN = "[ENTITY]"
+HEAD_TOKEN = "[HEAD]"
+TAIL_TOKEN = "[TAIL]"
 
 class EntityVocab(object):
     def __init__(self, vocab_file: str):

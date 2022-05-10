@@ -343,17 +343,20 @@ class KFormersForEntityTyping(nn.Module):
         super(KFormersForEntityTyping, self).__init__()
         self.num_labels = args.num_labels
         self.ent_num = args.max_ent_num
-
         self.alpha = args.alpha
         self.beta = args.beta
+
 
         args.add_pooling_layer = False
         config = args.model_config
         self.config = config
 
         self.kformers = KFormersModel(config, config_k, backbone_knowledge_dict)
-        # config.in_hidden_size = config.hidden_size
+        config.in_hidden_size = config.hidden_size
 
+
+        # self.classifier = RobertaOutputLayerEntityTyping(config)
+        # self.loss = nn.BCEWithLogitsLoss(reduction='mean')
 
         self.dropout = nn.Dropout(config.hidden_dropout_prob)
         self.typing = nn.Linear(config.hidden_size, self.num_labels)
@@ -402,8 +405,10 @@ class KFormersForEntityTyping(nn.Module):
         aux_logits = self.typing(anchor_vec + true_ent_vec + true_des_vec)  # ENT表征+true_e
 
         if labels is None:
-            return logits + aux_logits
+            return logits + aux_logits #+ aug_pl_logits
         else:
+            # aux_logits = self.classifier(feature_vector + k_ent_output).squeeze()  # batch K d增强或者污染
+            # aux_loss = torch.nn.CrossEntropyLoss()(aux_logits.view(input_ids.size(0), -1), k_label.view(-1))
             main_loss = F.binary_cross_entropy_with_logits(logits.view(-1), labels.view(-1).type_as(logits),
                                                            reduction='mean', pos_weight=None)
 
@@ -417,12 +422,22 @@ class KFormersForEntityTyping(nn.Module):
 
 
 
+        # enhanced_vec = entity_vec
+        # logits_2 = self.typing(enhanced_vec)
+        # logits_2 += logits
+        # aux_loss = F.binary_cross_entropy_with_logits(logits_2.view(-1), labels.view(-1).type_as(logits_2))
+        #
+        # if labels is None:
+        #     return logits
+        # else:
+        #     return logits_2, main_loss + 0.01 * aux_loss
+
+
 class KFormersForRelationClassification(nn.Module):
     def __init__(self, args, config_k, backbone_knowledge_dict):
         super(KFormersForRelationClassification, self).__init__()
         self.num_labels = args.num_labels
         self.ent_num = args.max_ent_num
-        self.alpha = args.alpha
         self.beta = args.beta
 
         args.add_pooling_layer = False
@@ -471,32 +486,22 @@ class KFormersForRelationClassification(nn.Module):
         feature_vector = self.dropout(feature_vector)
         logits = self.classifier(feature_vector)
 
-        # 第一个辅助loss：ent增强&des增强
-        # if len(start_id.shape) == 3:
-        sub_start_id, obj_start_id = start_id.split(1, dim=1)  # split to 2, each is 1
-        subj_output = torch.bmm(sub_start_id, original_text_output)
-        obj_output = torch.bmm(obj_start_id, original_text_output)
-        anchor_vec = torch.cat([subj_output, obj_output], dim=1) # batch 2 d
-
-        true_ent_vec = k_ent_output[range(k_ent_output.size(0)), k_label].unsqueeze(1) # batch 1 d
-        true_des_vec = torch.mean(k_ent_output, dim=1, keepdim=True)  # bach 1 d
-
-        t = anchor_vec + true_ent_vec + true_des_vec # batch 2 d
-        aux_logits = self.classifier(t.view(t.size(0), -1))  # ENT表征+true_e
-
-
 
         if labels is None:
-            return logits + aux_logits
+            return logits
         else:
             main_loss = F.cross_entropy(logits, labels)
-            aux_loss = F.cross_entropy(aux_logits, labels)
 
             # 第二个辅助loss：区分污染和增强
+            sub_start_id, obj_start_id = start_id.split(1, dim=1)  # split to 2, each is 1
+            subj_output = torch.bmm(sub_start_id, original_text_output)
+            obj_output = torch.bmm(obj_start_id, original_text_output)
+            anchor_vec = torch.cat([subj_output, obj_output], dim=1)  # batch 2 d
+
             anchor_vec = torch.mean(anchor_vec, dim=1, keepdim=True) # batch 1 d
             aug_pl_logits = self.aug_pl_fc(k_ent_output + anchor_vec)  # batch K d -> batch K/batch K C
             aug_pl_loss = F.cross_entropy(aug_pl_logits.view(input_ids.size(0), -1), k_label.view(-1))
 
-            return logits + aux_logits, main_loss + self.alpha * aux_loss + self.beta * aug_pl_loss
+            return logits, main_loss + self.beta * aug_pl_loss
 
 

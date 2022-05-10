@@ -28,7 +28,7 @@ from utils import compute_metrics
 from data_utils import output_modes, processors, final_metric
 from model_utils import ModelArchive
 from util import NullLogger
-from data_utils import ENTITY_TOKEN, MASK_TOKEN
+from data_utils import ENTITY_TOKEN, MASK_TOKEN, HEAD_TOKEN, TAIL_TOKEN
 
 logger = logging.getLogger(__name__)
 
@@ -69,31 +69,55 @@ def load_kformers_from_backbone_knowledge(args, k_config_class, k_model_class, K
     args.model_config = model_archive.config
 
     args.model_config.num_labels = args.num_labels
-    args.model_config.vocab_size += 1
     args.entity_vocab = model_archive.entity_vocab # 不用这一步了吧
-    args.model_config.entity_vocab_size = 2
-    args.model_config.k_entity_vocab_size = len(args.entity_vocab)
 
     args.experiment = NullLogger()
-
     # load checkpoint
     model_weights = torch.load('../checkpoints/luke_large_500k/pytorch_model.bin', map_location=args.device)
 
     # word embedding
     word_emb = model_weights["embeddings.word_embeddings.weight"]  # 50265*768
-    marker_emb = word_emb[args.tokenizer.convert_tokens_to_ids(["@"])[0]].unsqueeze(0)  # 1*768
-    model_weights["embeddings.word_embeddings.weight"] = torch.cat([word_emb, marker_emb])  # 后面拼一个marker_emb
-    args.tokenizer.add_special_tokens(dict(additional_special_tokens=[ENTITY_TOKEN]))
-    # ent_knowledge embedding
-    entity_emb = model_weights["entity_embeddings.entity_embeddings.weight"]  # 50W*256
-    model_weights['k_ent_embeddings.entity_embeddings.weight'] = entity_emb  # ???还要多拼一个吗？
-    model_weights['k_ent_embeddings.entity_embedding_dense.weight'] = model_weights['entity_embeddings.entity_embedding_dense.weight']
-    model_weights['k_ent_embeddings.LayerNorm.weight'] = model_weights['entity_embeddings.LayerNorm.weight']
-    model_weights['k_ent_embeddings.LayerNorm.bias'] = model_weights['entity_embeddings.LayerNorm.bias']
-    # entity embedding
-    entity_emb = model_weights["entity_embeddings.entity_embeddings.weight"]  # 50W*256
-    mask_emb = entity_emb[args.entity_vocab[MASK_TOKEN]].unsqueeze(0)  # 1*256
-    model_weights["entity_embeddings.entity_embeddings.weight"] = torch.cat([entity_emb[:1], mask_emb])  # 2*256?
+    head_emb = word_emb[args.tokenizer.convert_tokens_to_ids(["@"])[0]].unsqueeze(0)
+    tail_emb = word_emb[args.tokenizer.convert_tokens_to_ids(["#"])[0]].unsqueeze(0)
+    if args.task_name in ['openentity', 'figer']:
+        args.model_config.vocab_size += 1  # 1 2
+        args.model_config.entity_vocab_size = 2
+        args.model_config.k_entity_vocab_size = len(args.entity_vocab)
+
+        model_weights["embeddings.word_embeddings.weight"] = torch.cat([word_emb, head_emb])  # 后面拼一个marker_emb
+        args.tokenizer.add_special_tokens(dict(additional_special_tokens=[ENTITY_TOKEN]))
+        # ent_knowledge embedding
+        entity_emb = model_weights["entity_embeddings.entity_embeddings.weight"]  # 50W*256
+        model_weights['k_ent_embeddings.entity_embeddings.weight'] = entity_emb  # ???还要多拼一个吗？
+        model_weights['k_ent_embeddings.entity_embedding_dense.weight'] = model_weights[
+            'entity_embeddings.entity_embedding_dense.weight']
+        model_weights['k_ent_embeddings.LayerNorm.weight'] = model_weights['entity_embeddings.LayerNorm.weight']
+        model_weights['k_ent_embeddings.LayerNorm.bias'] = model_weights['entity_embeddings.LayerNorm.bias']
+        # entity embedding
+        entity_emb = model_weights["entity_embeddings.entity_embeddings.weight"]  # 50W*256
+        mask_emb = entity_emb[args.entity_vocab[MASK_TOKEN]].unsqueeze(0)  # 1*256
+        model_weights["entity_embeddings.entity_embeddings.weight"] = torch.cat([entity_emb[:1], mask_emb])  # 2*256?
+
+    else:
+        args.model_config.vocab_size += 2  # 1 2
+        args.model_config.entity_vocab_size = 3
+        args.model_config.k_entity_vocab_size = len(args.entity_vocab)
+
+        model_weights["embeddings.word_embeddings.weight"] = torch.cat([word_emb, head_emb, tail_emb])  # 50267*1024
+        args.tokenizer.add_special_tokens(dict(additional_special_tokens=[HEAD_TOKEN, TAIL_TOKEN]))
+        # ent_knowledge embedding
+        entity_emb = model_weights["entity_embeddings.entity_embeddings.weight"]  # 50W*256
+        model_weights['k_ent_embeddings.entity_embeddings.weight'] = entity_emb  # ???还要多拼一个吗？
+        model_weights['k_ent_embeddings.entity_embedding_dense.weight'] = model_weights[
+            'entity_embeddings.entity_embedding_dense.weight']
+        model_weights['k_ent_embeddings.LayerNorm.weight'] = model_weights['entity_embeddings.LayerNorm.weight']
+        model_weights['k_ent_embeddings.LayerNorm.bias'] = model_weights['entity_embeddings.LayerNorm.bias']
+        # entity embedding
+        entity_emb = model_weights["entity_embeddings.entity_embeddings.weight"]  # 50W*256
+        mask_emb = entity_emb[args.entity_vocab[MASK_TOKEN]].unsqueeze(0).expand(2, -1) # 2*256
+        # model_weights["entity_embeddings.entity_embeddings.weight"] = torch.cat([entity_emb[:1], mask_emb])  # 2*256?
+        model_weights["entity_embeddings.entity_embeddings.weight"] = torch.cat([entity_emb[:1], mask_emb])  # 3*256
+
 
     for num in range(args.model_config.num_hidden_layers):
         for attr_name in ("weight", "bias"):
@@ -168,13 +192,6 @@ def load_kformers_from_backbone_knowledge(args, k_config_class, k_model_class, K
                 v.requires_grad = False
             # else:
             #     print(v.requires_grad)
-
-    # not_update = ['backbone_', 'kformers.embeddings.', 'kformers.entity_embeddings.']
-    # for k, v in kformers_model.named_parameters():
-    #     for p in not_update:
-    #         if p in k:
-    #             v.requires_grad = False
-
     # == 在这里设置K-module的参数更新不更新 ==
     return args, kformers_model
 
@@ -520,16 +537,17 @@ def do_train(args, model, train_dataset, val_dataset, test_dataset=None):
                 print('epoch: ', epoch, 'global step: ', global_step, 'eval results: ', eval_results)
                 print('epoch: ', epoch, 'global step: ', global_step, 'test results: ', test_results)
 
-            # logging.info('Saving checkpoint...')
-            # output_dir = os.path.join(args.output_dir, 'checkpoint-{}-{}'.format(global_step, test_results[
-            #     final_metric[args.task_name]]))
-            # if not os.path.exists(output_dir):
-            #     os.makedirs(output_dir)
-            # model_to_save = model.module if hasattr(model,
-            #                                         'module') else model  # Take care of distributed/parallel training
-            # torch.save(model_to_save.state_dict(),
-            #            os.path.join(output_dir, "pytorch_model.bin"))  # save checkpoint
-            # logger.info("Save model checkpoint to %s", output_dir)
+            if args.save_steps > 0:
+                logging.info('Saving checkpoint...')
+                output_dir = os.path.join(args.output_dir, 'checkpoint-{}-{}'.format(global_step, test_results[
+                    final_metric[args.task_name]]))
+                if not os.path.exists(output_dir):
+                    os.makedirs(output_dir)
+                model_to_save = model.module if hasattr(model,
+                                                        'module') else model  # Take care of distributed/parallel training
+                torch.save(model_to_save.state_dict(),
+                           os.path.join(output_dir, "pytorch_model.bin"))  # save checkpoint
+                logger.info("Save model checkpoint to %s", output_dir)
 
         if 0 < args.max_steps < global_step:
             train_iterator.close()
@@ -681,10 +699,10 @@ def main():
     print('backbone_seq_length=', args.backbone_seq_length, ', knowledge_seq_length=', args.knowledge_seq_length,
           ', max_ent_num=', args.max_ent_num, ', max_des_num=', args.max_des_num, ', train_batch_size=', args.train_batch_size,
           ', learning_rate=', args.learning_rate, ', alpha, beta=', args.alpha, args.beta, ', seed=', args.seed)
-    logging.info('backbone_seq_length=', args.backbone_seq_length, 'knowledge_seq_length=', args.knowledge_seq_length,
-          'max_ent_num=', args.max_ent_num, 'max_des_num=', args.max_des_num, 'train_batch_size=',
-          args.train_batch_size,
-          'learning_rate=', args.learning_rate, 'alpha, beta=', args.alpha, args.beta, 'seed=', args.seed)
+    logging.info('backbone_seq_length={}, knowledge_seq_length={}, max_ent_num={}, max_des_num={}, '
+                 'train_batch_size={}, learning_rate={}, alpha, beta={}, {}, seed={}'.format(args.backbone_seq_length,
+                 args.knowledge_seq_length, args.max_ent_num, args.max_des_num,
+                 args.train_batch_size, args.learning_rate, args.alpha, args.beta, args.seed))
     # ## Training
     if args.mode == 'train':
         from data_utils import load_and_cache_examples

@@ -343,7 +343,6 @@ class KFormersForEntityTyping(nn.Module):
         super(KFormersForEntityTyping, self).__init__()
         self.num_labels = args.num_labels
         self.ent_num = args.max_ent_num
-
         self.alpha = args.alpha
         self.beta = args.beta
 
@@ -352,7 +351,7 @@ class KFormersForEntityTyping(nn.Module):
         self.config = config
 
         self.kformers = KFormersModel(config, config_k, backbone_knowledge_dict)
-        # config.in_hidden_size = config.hidden_size
+        config.in_hidden_size = config.hidden_size
 
 
         self.dropout = nn.Dropout(config.hidden_dropout_prob)

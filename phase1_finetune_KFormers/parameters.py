@@ -14,8 +14,8 @@ def parse_args():
     # parser.add_argument("--entity_vocab_file", type=str, default="../data/knowledge/entity_qid_vocab.tsv", )
 
     parser.add_argument("--train_batch_size", type=int, default=4)
-    parser.add_argument("--valid_batch_size", type=int, default=30)  # 300
-    parser.add_argument("--test_batch_size", type=int, default=300)
+    parser.add_argument("--valid_batch_size", type=int, default=256)  # 300
+    # parser.add_argument("--test_batch_size", type=int, default=300)
 
     parser.add_argument("--weight_decay", type=float, default=0.01)
     parser.add_argument("--backbone_seq_length", type=int, default=32)
