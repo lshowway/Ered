@@ -1,6 +1,3 @@
-import math
-import os.path
-
 import torch.nn as nn
 import torch
 import torch.nn.functional as F
@@ -9,14 +6,7 @@ from parameters import parse_args
 
 args = parse_args()
 
-# if args.backbone_model_type == 'roberta':
-#     from transformers.models.roberta.modeling_roberta import \
-#         (
-#         RobertaEmbeddings as BackboneEmbeddings,
-#         RobertaLayer as BackboneLayer,
-#         RobertaPreTrainedModel as BackbonePreTrainedModel,
-#         RobertaPooler as BackbonePooler,
-#     )  # 这个是Roberta
+
 if args.backbone_model_type == 'luke':
     from luke_modeling import \
         (
@@ -30,98 +20,12 @@ if args.backbone_model_type == 'luke':
     )  # Bert
 else:
     pass
-from transformers.models.roberta.modeling_roberta import RobertaPooler as BackbonePooler
 if args.knowledge_model_type == 'distilbert':
     from transformers.models.distilbert.modeling_distilbert import \
         (
         Embeddings as KEmbeddings,
         TransformerBlock as KnowledgeLayer,
     )  # 这个是k module
-
-
-
-
-class GNN(nn.Module):
-    def __init__(self, config, config_k=None):
-        super(GNN, self).__init__()
-        self.config_k = config_k
-        if config_k is not None:
-            self.projection = nn.Linear(config_k.hidden_size, config.hidden_size)
-
-            self.num_attention_heads = config.num_attention_heads
-            self.attention_head_size = int(config.hidden_size / config.num_attention_heads)
-            self.all_head_size = self.num_attention_heads * self.attention_head_size
-
-            self.query = nn.Linear(config.hidden_size, self.all_head_size)
-            self.key = nn.Linear(config.hidden_size, self.all_head_size)
-            self.value = nn.Linear(config.hidden_size, self.all_head_size)
-
-            self.LayerNorm = nn.LayerNorm(config.hidden_size, eps=config.layer_norm_eps)
-            self.dropout = nn.Dropout(config.attention_probs_dropout_prob)
-
-            self.map = nn.Linear(100, config.hidden_size)
-
-    def transpose_for_scores(self, x):
-        new_x_shape = x.size()[:-1] + (self.num_attention_heads, self.attention_head_size)
-        x = x.view(*new_x_shape)
-        return x.permute(0, 2, 1, 3)
-
-    def forward(self, hidden_states, k_hidden_states=None, entity_embed=None):
-        if self.config_k is not None:
-            # 处理original input text的表征
-            # 第一种： 使用CLS的表征
-            # center_states = hidden_states[:, :1, :]  # batch, 1, d=1024
-            # 第二种：全部token的表征都使用
-            center_states = hidden_states  # batch, L1, d1
-            L1 = hidden_states.size(1)
-
-            # 处理N条description的表征
-            # 第一种使用CLS的表征
-            # knowledge_states = k_hidden_states  # # batch, N, L2, d2=768
-            batch, neighbour_num, description_len, d2 = k_hidden_states.size()
-            knowledge_states = k_hidden_states[:, :, 0, :]  # batch, N, d2=768
-            knowledge_states = self.projection(knowledge_states)  # batch, N, d1=1024
-            knowledge_states = self.dropout(self.LayerNorm(knowledge_states))
-
-            # 将original input text的表征和description的表征合起来
-            entity_embed  = self.map(entity_embed)
-            entity_embed = self.dropout(self.LayerNorm(entity_embed))
-            center_knowledge_states = torch.cat([center_states, entity_embed + knowledge_states], dim=1)  # batch, L1+N+1, d1
-            # center_knowledge_states = self.dropout(self.LayerNorm(center_knowledge_states))
-
-            # 这个attention_mask是center和neighbour之间是否可见，也可以不加，默认就是互相可见
-            # attention_mask = torch.ones(batch, L).unsqueeze(1).unsqueeze(1).to(hidden_states.device)  # batch, 1, 1, L1+K
-
-            # query = self.query(center_knowledge_states[:, :1])  # batch, 1, d
-            query = self.query(center_knowledge_states)  # batch, L1+N, d1
-            key = self.key(center_knowledge_states)  # batch, L1+N, d1
-            value = self.value(center_knowledge_states)  # batch, L1+N, d1
-
-            query = self.transpose_for_scores(query)  # batch, d3, L1+K, d4
-            key = self.transpose_for_scores(key)   # batch, d3, L1+K, d4
-            value = self.transpose_for_scores(value)  # batch, d3, L1+K, d4
-
-            attention_scores = torch.matmul(query, key.transpose(-1, -2))  # batch, d3, 1, L1+N
-            attention_scores = attention_scores / math.sqrt(self.attention_head_size)
-            # if attention_mask is not None:
-            #     attention_scores = attention_scores + attention_mask  # batch, d3, 1, L1+N
-            attention_probs = nn.Softmax(dim=-1)(attention_scores)  # batch, d3, 1, L1+N
-
-            attention_probs = self.dropout(attention_probs)
-            context_layer = torch.matmul(attention_probs, value)  # batch, d3, L1+N, d4
-
-            context_layer = context_layer.permute(0, 2, 1, 3).contiguous()
-            new_context_layer_shape = context_layer.size()[:-2] + (self.all_head_size,)
-            context_layer = context_layer.view(*new_context_layer_shape)  # batch, L1+N, d1(d3*d4)
-
-            # 使用受description影响后的original text的表征,为啥是-1
-            # hidden_states[:, -1, :] = context_layer[:, 0, :]  # 替换掉 batch L1, d1
-            hidden_states[:, 0, :] = context_layer[:, 0, :]  # 替换掉 batch L1, d1
-            # hidden_states[:, :L1, :] = context_layer[:, :L1, :]
-
-            return hidden_states  # batch, d
-        else:
-            return hidden_states
 
 
 
@@ -146,7 +50,8 @@ class KFormersLayer(nn.Module):
         ent_size = k_entity_hidden_states.size(1)
         # des_size = k_des_hidden_states.size(1)
         # 谁在前，谁在后
-        k_layer_outputs = None
+        k_layer_outputs, k_des_to_backbone = None, None
+
         word_hidden_states = torch.cat([word_hidden_states, k_entity_hidden_states], dim=1)
         batch_size, ent_num, _ = k_entity_hidden_states.size()
         ent_attention_mask = torch.ones(batch_size, ent_num, device=word_hidden_states.device)
@@ -157,20 +62,23 @@ class KFormersLayer(nn.Module):
             k_layer_outputs = self.k_layer(k_des_hidden_states.view(batch_size, des_num * length, d),
                                            k_des_attention_mask.view(batch_size, des_num * length))
             k_layer_outputs = k_layer_outputs[-1].reshape(batch_size, des_num, length, d)
-            k_des_attention_output = k_layer_outputs[:, :, 0, :]  # batch K d2
-            k_des_attention_output = self.map(k_des_attention_output)  # batch K d description representation
+            k_des_to_backbone = k_layer_outputs[:, :, 0, :]  # batch K d2
+            k_des_to_backbone = self.map(k_des_to_backbone)  # batch K d description representation
 
             # description_state, entity_state, original_input_state整合到一起
-            word_hidden_states = torch.cat([word_hidden_states, k_des_attention_output], dim=1)  # batch L1+K1+K2 d
+            word_hidden_states = torch.cat([word_hidden_states, k_des_to_backbone], dim=1)  # batch L1+K1+K2 d
             word_attention_mask = torch.cat([word_attention_mask, k_des_mask], dim=-1) # batch 1 1 L1+K1+K2
 
         word_attention_output, entity_attention_output = self.backbone_layer(
             word_hidden_states, word_attention_mask, entity_hidden_states, entity_attention_mask
         ) # batch L1 d, batch 2 d
-
+        # [0]: word_vec, [1]:k_ent_vec
+        # [2, 3] = des_vec and mapped des_vec # batch des_num 1024
+        # [-1]: entity_vec
         return word_attention_output[:, :word_size, :], \
                word_attention_output[:, word_size: word_size+ent_size, :], \
                k_layer_outputs, \
+               k_des_to_backbone, \
                entity_attention_output
 
 
@@ -194,10 +102,12 @@ class KFormersEncoder(nn.Module):
                 k_entity_hidden_states=None,
                 k_des_hidden_states=None, k_des_attention_mask=None, k_des_mask=None,):
 
-        # k_ent_output, k_des_output = None, None
-        last_des_hidden_states = k_des_hidden_states
+        last_des_hidden_states = k_des_hidden_states  # batch des_num L d1
+        last_des_to_backbone = None
         for i, layer_module in enumerate(self.layer):
-            # print(i)
+            # [0]: word_vec, [1]:k_ent_vec
+            # [2, 3] = des_vec and mapped des_vec # batch des_num 1024
+            # [-1]: entity_vec
             layer_outputs = layer_module(word_hidden_states, attention_mask,
                                          entity_hidden_states, entity_attention_mask,
                                          k_entity_hidden_states=k_entity_hidden_states,
@@ -208,14 +118,14 @@ class KFormersEncoder(nn.Module):
             k_des_hidden_states = layer_outputs[2] if layer_outputs[2] is not None else last_des_hidden_states
             if layer_outputs[2] is not None:
                 last_des_hidden_states = layer_outputs[2]
+                last_des_to_backbone = layer_outputs[3]
             entity_hidden_states = layer_outputs[-1]
 
-        outputs = (word_hidden_states, k_entity_hidden_states, k_des_hidden_states, entity_hidden_states)
+        outputs = (word_hidden_states, k_entity_hidden_states, last_des_hidden_states, last_des_to_backbone, entity_hidden_states)
         return outputs
 
 
 
-# class KFormersModel(nn.Module):
 class KFormersModel(LukeModel):
     def __init__(self, config, config_k, backbone_knowledge_dict):
         # super(KFormersModel, self).__init__()
@@ -266,74 +176,13 @@ class KFormersModel(LukeModel):
                                        k_entity_hidden_states=k_entity_embeddings,
                                        k_des_hidden_states=k_des_embeddings, k_des_attention_mask=k_des_mask_one, k_des_mask=k_des_mask,
                                        )
-
-        original_text_output, k_ent_output, k_des_output, entity_output = encoder_outputs
+        # word_hidden_states, k_entity_hidden_states, last_des_hidden_states, last_des_to_backbone, entity_hidden_states
+        original_text_output, k_ent_output, _, mapped_k_des_output, entity_output = encoder_outputs
         if self.pooler is None:
-            return (original_text_output, None, entity_output, k_entity_embeddings, k_ent_output, k_des_output)
+            return (original_text_output, None, entity_output, k_entity_embeddings, k_ent_output, mapped_k_des_output)
         else:
             pooled_output = self.pooler(original_text_output)
-            return (original_text_output, pooled_output, entity_output, k_entity_embeddings, k_ent_output, k_des_output)
-
-
-
-# --------------------------------------------------------------------------
-class RobertaOutputLayerEntityTyping(nn.Module):
-    def __init__(self, config):
-        super().__init__()
-        self.dense = nn.Linear(config.in_hidden_size, config.hidden_size)
-        self.dropout = nn.Dropout(config.hidden_dropout_prob)
-        self.out_proj = nn.Linear(config.hidden_size, config.num_labels)
-
-    def forward(self, features):
-        # x = features[:, 0, :]  # take <s> token (equiv. to [CLS])
-        x = features  # of entity
-        x = self.dropout(x)
-        x = self.dense(x)
-        x = torch.tanh(x)
-        x = self.dropout(x)
-        x = self.out_proj(x)
-        return x
-
-
-
-class RobertaOutputLayerSequenceClassification(nn.Module):
-    """Head for sentence-level classification tasks."""
-
-    def __init__(self, config):
-        super().__init__()
-        self.dense = nn.Linear(config.hidden_size, config.hidden_size)
-        self.dropout = nn.Dropout(config.hidden_dropout_prob)
-        self.out_proj = nn.Linear(config.hidden_size, config.num_labels)
-
-    def forward(self, features, **kwargs):
-        x = features[:, 0, :]  # take <s> token (equiv. to [CLS])
-        x = self.dropout(x)
-        x = self.dense(x)
-        x = torch.tanh(x)
-        x = self.dropout(x)
-        x = self.out_proj(x)
-        return x
-
-
-
-class RobertaOutputLayerRelationClassification(nn.Module):
-    """Head for two-entity classification tasks."""
-
-    def __init__(self, config):
-        super().__init__()
-        self.dense = nn.Linear(config.hidden_size * 2, config.hidden_size)
-        self.dropout = nn.Dropout(config.hidden_dropout_prob)
-        self.out_proj = nn.Linear(config.hidden_size, config.num_labels)
-
-    def forward(self, features, **kwargs):
-        # x = features[:, 0, :]  # take <s> token (equiv. to [CLS])
-        x = features  # of entity
-        x = self.dropout(x)
-        x = self.dense(x)
-        x = torch.tanh(x)
-        x = self.dropout(x)
-        x = self.out_proj(x)
-        return x
+            return (original_text_output, pooled_output, entity_output, k_entity_embeddings, k_ent_output, mapped_k_des_output)
 
 
 
@@ -343,6 +192,7 @@ class KFormersForEntityTyping(nn.Module):
         super(KFormersForEntityTyping, self).__init__()
         self.num_labels = args.num_labels
         self.ent_num = args.max_ent_num
+
         self.alpha = args.alpha
 
         args.add_pooling_layer = False
@@ -350,7 +200,6 @@ class KFormersForEntityTyping(nn.Module):
         self.config = config
 
         self.kformers = KFormersModel(config, config_k, backbone_knowledge_dict)
-        config.in_hidden_size = config.hidden_size
 
         self.dropout = nn.Dropout(config.hidden_dropout_prob)
         self.typing = nn.Linear(config.hidden_size, self.num_labels)
@@ -382,8 +231,7 @@ class KFormersForEntityTyping(nn.Module):
                 k_ent_ids=k_ent_ids, k_label=k_label,
                 k_des_ids=k_des_ids, k_des_mask_one=k_des_mask_one,  k_des_seg=k_des_seg, k_des_mask=k_des_mask, )
 
-        original_text_output, pooled_output, entity_output, k_entity_embeddings, k_ent_output, k_des_output = outputs  # batch L d
-
+        original_text_output, pooled_output, entity_output, k_entity_embeddings, k_ent_output, mapped_k_des_output = outputs  # batch L d
 
         # 主loss
         feature_vector = self.dropout(entity_output[:, 0, :])
@@ -393,17 +241,15 @@ class KFormersForEntityTyping(nn.Module):
         start_id = start_id.unsqueeze(1)  # batch 1 L
         anchor_vec = torch.bmm(start_id, original_text_output).squeeze(1)  # batch d
         true_ent_vec = k_ent_output[range(k_ent_output.size(0)), k_label]
-        true_des_vec = torch.mean(k_ent_output, dim=1, keepdim=False)  # bach d
+        true_des_vec = torch.mean(mapped_k_des_output, dim=1, keepdim=False)  # bach d
         aux_logits = self.typing(anchor_vec + true_ent_vec + true_des_vec)  # ENT表征+true_e
 
         if labels is None:
             return logits + aux_logits
         else:
-            main_loss = F.binary_cross_entropy_with_logits(logits.view(-1), labels.view(-1).type_as(logits),
-                                                           reduction='mean', pos_weight=None)
+            main_loss = F.binary_cross_entropy_with_logits(logits.view(-1), labels.view(-1).type_as(logits))
 
             aux_loss = F.binary_cross_entropy_with_logits(aux_logits.view(-1), labels.view(-1).type_as(aux_logits))
-
 
             return logits + aux_logits, main_loss + self.alpha * aux_loss
 
@@ -415,6 +261,7 @@ class KFormersForRelationClassification(nn.Module):
         self.num_labels = args.num_labels
         self.ent_num = args.max_ent_num
         self.alpha = args.alpha
+        self.beta = args.beta
 
         args.add_pooling_layer = False
         config = args.model_config
@@ -424,6 +271,8 @@ class KFormersForRelationClassification(nn.Module):
 
         self.dropout = nn.Dropout(config.hidden_dropout_prob)
         self.classifier = nn.Linear(args.model_config.hidden_size * 2, self.num_labels, False)
+
+        self.aug_pl_fc = nn.Linear(config.hidden_size, 1)
 
         self.apply(self.init_weights)
 
@@ -474,12 +323,18 @@ class KFormersForRelationClassification(nn.Module):
         aux_logits = self.classifier(t.view(t.size(0), -1))  # ENT表征+true_e
 
 
+
         if labels is None:
-            return logits + aux_logits #+ aug_pl_logits
+            return logits + aux_logits
         else:
             main_loss = F.cross_entropy(logits, labels)
             aux_loss = F.cross_entropy(aux_logits, labels)
 
-            return logits + aux_logits, main_loss + self.alpha * aux_loss
+            # 第二个辅助loss：区分污染和增强
+            anchor_vec = torch.mean(anchor_vec, dim=1, keepdim=True) # batch 1 d
+            aug_pl_logits = self.aug_pl_fc(k_ent_output + anchor_vec)  # batch K d -> batch K/batch K C
+            aug_pl_loss = F.cross_entropy(aug_pl_logits.view(input_ids.size(0), -1), k_label.view(-1))
+
+            return logits + aux_logits, main_loss + self.alpha * aux_loss + self.beta * aug_pl_loss
 
 

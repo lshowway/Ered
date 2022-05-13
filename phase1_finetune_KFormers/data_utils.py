@@ -417,9 +417,9 @@ def convert_examples_to_features_relation_classification(args, examples, entity_
         if obj_start > origin_seq_length - 1:
             obj_start = 0
         if sub_end > origin_seq_length - 1:
-            sub_end = -1
-        if obj_end > origin_seq_length - 1:
-            obj_end = -1
+            sub_end = origin_seq_length
+        if obj_end > origin_seq_length:
+            obj_end = origin_seq_length
         # the sub_special_start_id is an array, where the idx of start id is 1, other position is 0.
         subj_special_start_id = np.zeros(origin_seq_length)
         obj_special_start_id = np.zeros(origin_seq_length)
@@ -433,7 +433,8 @@ def convert_examples_to_features_relation_classification(args, examples, entity_
         for span_name in ([sub_start, sub_end], [obj_start, obj_end]):
             start, end = span_name
             position_ids = list(range(start, end))[:max_mention_length]
-            position_ids += [-1] * (max_mention_length - end + start)
+            position_ids += [-1] * (max_mention_length - len(position_ids))
+            assert len(position_ids) == max_mention_length
             entity_identifier_position_ids.append(position_ids)
         # 处理knowledge：entity
         k_ent_ids = [entity_vocab[ent[0]] for ent in example.entities if ent[0] in entity_vocab]
@@ -588,7 +589,6 @@ def convert_examples_to_features_entity_typing(args, examples, entity_vocab,
         # 处理knowledge：description
         des_input_ids, des_att_mask_one, des_segment_one = [], [], []
 
-        # k_ent_qids = [ent[0] for ent in example.entities if ent[0] in entity_vocab]
         k_ent_qids = [ent[0] for ent in example.entities]
         k_des = [QID_description_dict[qid] for qid in k_ent_qids if qid in QID_description_dict]
         k_des = k_des[: max_des_num]
@@ -842,25 +842,25 @@ TACRED_relations = ['per:siblings', 'per:parents', 'org:member_of', 'per:origin'
 class TACREDProcessor(DataProcessor):
 
     def get_train_examples(self, data_dir, dataset_type):
-        """See base class."""
         return self._create_examples(
             self._read_json(os.path.join(data_dir, "{}.json".format(dataset_type))))
 
     def get_dev_examples(self, data_dir, dataset_type):
-        """See base class."""
         return self._create_examples(
             self._read_json(os.path.join(data_dir, "{}.json".format(dataset_type))))
 
-    def get_labels(self):
-        relations = dict(zip(TACRED_relations, list(range(len(TACRED_relations)))))
-
-        return relations
+    def get_labels(self, ):
+        labels = set(TACRED_relations)
+        if 'NA' in labels:
+            labels.discard("NA")
+            return ["NA"] + sorted(labels)
+        else:
+            return sorted(labels)
 
     def _create_examples(self, lines, ):
         examples = []
-        NA_count = 0
         label_set = self.get_labels()
-        no_relation_number = label_set['NA']
+        label_map = {l: i for i, l in enumerate(label_set)}
         for (i, line) in enumerate(lines):
             guid = i
             text_a = line['text']
@@ -868,26 +868,17 @@ class TACREDProcessor(DataProcessor):
                 if x[1] == 1:
                     x[1] = 0
 
-            t1 = (line["ents"][0][1], line["ents"][0][2])
-            t2 = (line["ents"][1][1], line["ents"][1][2])
-
-            if t1[0] < t2[0]:
-                sub = t1
-                obj = t2
-            else:
-                sub = t2
-                obj = t1
+            sub = (line["ents"][0][1], line["ents"][0][2])
+            obj = (line["ents"][1][1], line["ents"][1][2])
 
             text_b = (sub[0], sub[1], obj[0], obj[1])
 
             label = line['label']
-            label = label_set[label]
+            label = label_map[label]
             neighbour = line['ann']
-            if neighbour == "None" or neighbour is None:
-                print(line)
             examples.append(
                 InputExample(guid=guid, text_a=text_a, text_b=text_b, entities=neighbour, label=label))
-        print('NA_count ', NA_count)
+        random.shuffle(examples)
         return examples
 
 
@@ -1056,7 +1047,6 @@ final_metric = {
     "fewrel": 'micro_F1'
 
 }
-
 
 
 
