@@ -309,6 +309,8 @@ def do_train(args, model, train_dataset, val_dataset, test_dataset=None):
                 scheduler.step()  # Update learning rate schedule
                 model.zero_grad()
                 global_step += 1
+
+                del batch
                 torch.cuda.empty_cache()
             if args.local_rank in [-1, 0] and args.logging_steps > 0 and global_step % args.logging_steps == 0:
                 logger.info("epoch {}, step {}, global_step {}, train_loss: {:.5f}".format(epoch, step + 1, global_step, loss))

@@ -190,9 +190,6 @@ class KFormersForEntityTyping(nn.Module):
     def __init__(self, args, config_k, backbone_knowledge_dict):
         super(KFormersForEntityTyping, self).__init__()
         self.num_labels = args.num_labels
-        self.ent_num = args.max_ent_num
-
-        self.beta = args.beta
 
         args.add_pooling_layer = False
         config = args.model_config
@@ -202,8 +199,6 @@ class KFormersForEntityTyping(nn.Module):
 
         self.dropout = nn.Dropout(config.hidden_dropout_prob)
         self.typing = nn.Linear(config.hidden_size, self.num_labels)
-
-        self.aug_pl_fc = nn.Linear(config.hidden_size, 1)
 
 
         self.apply(self.init_weights)
@@ -239,21 +234,12 @@ class KFormersForEntityTyping(nn.Module):
         feature_vector = self.dropout(entity_output[:, 0, :])
         logits = self.typing(feature_vector)
 
-        # 第一个辅助loss：ent增强&des增强
-        start_id = start_id.unsqueeze(1)  # batch 1 L
-        anchor_vec = torch.bmm(start_id, original_text_output).squeeze(1)  # batch d
-
         if labels is None:
             return logits
         else:
             main_loss = F.binary_cross_entropy_with_logits(logits.view(-1), labels.view(-1).type_as(logits))
 
-            # 第二个辅助loss：区分污染和增强
-            aug_pl_logits = self.aug_pl_fc(k_ent_output + anchor_vec.unsqueeze(1))  # batch K d -> batch K/batch K C
-
-            aug_pl_loss = nn.CrossEntropyLoss()(aug_pl_logits.view(input_ids.size(0), -1), k_label.view(-1))
-
-            return logits, main_loss +  self.beta * aug_pl_loss
+            return logits, main_loss
 
 
 
@@ -261,9 +247,6 @@ class KFormersForRelationClassification(nn.Module):
     def __init__(self, args, config_k, backbone_knowledge_dict):
         super(KFormersForRelationClassification, self).__init__()
         self.num_labels = args.num_labels
-        self.ent_num = args.max_ent_num
-
-        self.beta = args.beta
 
         args.add_pooling_layer = False
         config = args.model_config
@@ -273,8 +256,6 @@ class KFormersForRelationClassification(nn.Module):
 
         self.dropout = nn.Dropout(config.hidden_dropout_prob)
         self.classifier = nn.Linear(args.model_config.hidden_size * 2, self.num_labels, False)
-
-        self.aug_pl_fc = nn.Linear(config.hidden_size, 1)
 
         self.apply(self.init_weights)
 
@@ -311,22 +292,13 @@ class KFormersForRelationClassification(nn.Module):
         feature_vector = self.dropout(feature_vector)
         logits = self.classifier(feature_vector)
 
-        # 第一个辅助loss：ent增强&des增强
-        sub_start_id, obj_start_id = start_id.split(1, dim=1)  # split to 2, each is 1
-        subj_output = torch.bmm(sub_start_id, original_text_output)
-        obj_output = torch.bmm(obj_start_id, original_text_output)
-        anchor_vec = torch.cat([subj_output, obj_output], dim=1) # batch 2 d
-
 
         if labels is None:
             return logits
         else:
             main_loss = F.cross_entropy(logits, labels)
 
-            # 第二个辅助loss：区分污染和增强
-            anchor_vec = torch.mean(anchor_vec, dim=1, keepdim=True) # batch 1 d
-            aug_pl_logits = self.aug_pl_fc(k_ent_output + anchor_vec)  # batch K d -> batch K/batch K C
-            aug_pl_loss = F.cross_entropy(aug_pl_logits.view(input_ids.size(0), -1), k_label.view(-1))
 
-            return logits, main_loss + self.beta * aug_pl_loss
+            return logits, main_loss
+
 

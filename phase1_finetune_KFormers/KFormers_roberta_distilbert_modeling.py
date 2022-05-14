@@ -302,6 +302,7 @@ class KFormersForRelationClassification(nn.Module):
 
         self.dropout = nn.Dropout(config.hidden_dropout_prob)
         self.classifier = nn.Linear(args.model_config.hidden_size * 2, self.num_labels, False)
+        self.classifier_2 = nn.Linear(args.model_config.hidden_size * 2, self.num_labels, False)
 
         self.aug_pl_fc = nn.Linear(config.hidden_size, 1)
 
@@ -350,7 +351,8 @@ class KFormersForRelationClassification(nn.Module):
         true_des_vec = torch.mean(mapped_k_des_output, dim=1, keepdim=True)  # bach 1 d
 
         t = anchor_vec + true_ent_vec + true_des_vec # batch 2 d
-        aux_logits = self.classifier(t.view(t.size(0), -1))  # ENT表征+true_e
+        t = self.dropout(t)
+        aux_logits = self.classifier_2(t.view(t.size(0), -1))  # ENT表征+true_e
 
 
         if labels is None:
@@ -365,6 +367,93 @@ class KFormersForRelationClassification(nn.Module):
             aug_pl_loss = F.cross_entropy(aug_pl_logits.view(input_ids.size(0), -1), k_label.view(-1))
 
             return logits + aux_logits, main_loss + self.alpha * aux_loss + self.beta * aug_pl_loss
+
+
+
+class KFormersForSequenceClassification(nn.Module):
+    def __init__(self, args, config_k, backbone_knowledge_dict):
+        super(KFormersForSequenceClassification, self).__init__()
+        self.num_labels = args.num_labels
+        self.ent_num = args.max_ent_num
+
+        self.alpha = args.alpha
+        self.beta = args.beta
+
+        args.add_pooling_layer = False
+        config = args.model_config
+        self.config = config
+
+        self.kformers = KFormersModel(config, config_k, backbone_knowledge_dict)
+
+        self.dropout = nn.Dropout(config.hidden_dropout_prob)
+        self.classifier = nn.Linear(config.hidden_size, self.num_labels)
+        self.classifier_2 = nn.Linear(config.hidden_size, self.num_labels)
+
+        self.aug_pl_fc = nn.Linear(config.hidden_size, 1)
+
+        self.apply(self.init_weights)
+
+    def init_weights(self, module: nn.Module):
+        if isinstance(module, nn.Linear):
+            module.weight.data.normal_(mean=0.0, std=self.config.initializer_range)
+        elif isinstance(module, nn.Embedding):
+            if module.embedding_dim == 1:  # embedding for bias parameters
+                module.weight.data.zero_()
+            else:
+                module.weight.data.normal_(mean=0.0, std=self.config.initializer_range)
+        elif isinstance(module, nn.LayerNorm):
+            module.bias.data.zero_()
+            module.weight.data.fill_(1.0)
+        if isinstance(module, nn.Linear) and module.bias is not None:
+            module.bias.data.zero_()
+
+    def forward(self, input_ids=None, attention_mask=None, token_type_ids=None, start_id=None,
+                entity_ids=None, entity_attention_mask=None, entity_segment_ids=None, entity_position_ids=None,
+                k_ent_ids=None, k_label=None,
+                k_des_ids=None, k_des_mask_one=None,  k_des_seg=None, k_des_mask=None, labels=None):
+
+
+        outputs = self.kformers(input_ids=input_ids, attention_mask=attention_mask, token_type_ids=token_type_ids, start_id=start_id,
+                entity_ids=entity_ids, entity_attention_mask=entity_attention_mask, entity_segment_ids=entity_segment_ids, entity_position_ids=entity_position_ids,
+                k_ent_ids=k_ent_ids, k_label=k_label,
+                k_des_ids=k_des_ids, k_des_mask_one=k_des_mask_one,  k_des_seg=k_des_seg, k_des_mask=k_des_mask, )
+
+        original_text_output, pooled_output, entity_output, k_entity_embeddings, k_ent_output, mapped_k_des_output = outputs  # batch L d
+
+        # 主loss
+        feature_vector = self.dropout(entity_output[:, 0, :])
+        logits = self.classifier(feature_vector)
+
+        # 第一个辅助loss：ent增强&des增强
+        cls_vec = original_text_output[:, 0, :] # batch d
+        true_ent_vec = k_ent_output[range(k_ent_output.size(0)), k_label]
+        true_des_vec = torch.mean(mapped_k_des_output, dim=1, keepdim=False)  # bach d
+        aux_logits = self.classifier_2(self.dropout(cls_vec + true_ent_vec + true_des_vec))  # ENT表征+true_e
+
+        if labels is None:
+            return logits + aux_logits
+        else:
+            main_loss = F.binary_cross_entropy_with_logits(logits.view(-1), labels.view(-1).type_as(logits))
+
+            aux_loss = F.binary_cross_entropy_with_logits(aux_logits.view(-1), labels.view(-1).type_as(aux_logits))
+
+            # 第二个辅助loss：区分污染和增强
+            aug_pl_logits = self.aug_pl_fc(k_ent_output + cls_vec.unsqueeze(1))  # batch K d -> batch K/batch K C
+            # aug_pl_loss = F.binary_cross_entropy_with_logits(aug_pl_logits.view(-1), k_label_onehot.view(-1).type_as(aux_logits))
+
+            aug_pl_loss = nn.CrossEntropyLoss()(aug_pl_logits.view(input_ids.size(0), -1), k_label.view(-1))
+
+            return logits + aux_logits, main_loss + self.alpha * aux_loss + self.beta * aug_pl_loss
+
+
+
+
+
+
+
+
+
+
 
 
 def poly1_cross_entropy_torch(logits, labels, class_number=3, epsilon=1.0):
