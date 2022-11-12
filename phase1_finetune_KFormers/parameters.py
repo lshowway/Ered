@@ -9,8 +9,8 @@ def parse_args():
     parser.add_argument("--task_name", type=str, default="")  #, choices=['quality_control']
     parser.add_argument("--data_dir", type=str, default="", )
     parser.add_argument("--output_dir", type=str, default="", )
-    # parser.add_argument("--qid_file", type=str, default="G:\D\MSRA\knowledge_aware\data\knowledge\pretrain\wikidata_description/all_wikidata5m_QIDs_name_des.wikidata", )
-    parser.add_argument("--qid_file", type=str, default="../data/knowledge/pretrain/wikidata_description/all_wikidata5m_QIDs_name_des.wikidata", )
+    # parser.add_argument("--qid_file", type=str, default="../data/knowledge/pretrain/wikidata_description/all_wikidata5m_QIDs_name_des.wikidata", )
+    parser.add_argument("--qid_file", type=str, default="../data/knowledge/pretrain/wikipedia_description/wikidata5m_des.wikipedia")
 
     parser.add_argument("--train_batch_size", type=int, default=4)
     parser.add_argument("--valid_batch_size", type=int, default=256)  # 300
@@ -30,7 +30,7 @@ def parse_args():
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument('--gradient_accumulation_steps', type=int, default=1,
                         help="Number of updates steps to accumulate before performing a backward/update pass.")
-    parser.add_argument("--eval_steps", type=int, default=-1)
+    parser.add_argument("--eval_steps", type=int, default=50)
     parser.add_argument("--logging_steps", type=int, default=-1)
     parser.add_argument('--save_steps', type=int, default=-1, help="Save checkpoint every X updates steps.")
     parser.add_argument("--max_steps", default=-1, type=int, help="If > 0: set total number of training steps to perform. Override num_train_epochs.")
@@ -46,7 +46,7 @@ def parse_args():
     parser.add_argument("--post_trained_checkpoint_embedding", default="G:\D\MSRA\knowledge_aware\checkpoints\checkpoint-280000", type=str)
     t = dict(zip(range(24), range(24)))
     # parser.add_argument("--backbone_knowledge_dict", default={0: 0, 5: 1, 8: 2, 9: 3, 10: 4, 22: 5}, type=dict)
-    parser.add_argument("--backbone_knowledge_dict", default={18: 0, 19: 1, 20: 2, 21: 3, 22: 4, 23: 5}, type=dict)
+    parser.add_argument("--backbone_knowledge_dict", default='{18: 0, 19: 1, 20: 2, 21: 3, 22: 4, 23: 5}', type=str)
     parser.add_argument("--add_knowledge", type=util.str2bool, default=True)
 
     parser.add_argument("--learning_rate", type=float, default=1e-5)

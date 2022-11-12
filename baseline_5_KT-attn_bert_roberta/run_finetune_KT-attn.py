@@ -1,4 +1,3 @@
-""" k-adapter for Quality Control"""
 from __future__ import absolute_import, division, print_function
 import argparse
 import logging
@@ -6,8 +5,7 @@ import os
 import random
 import numpy as np
 import torch
-import torch.nn as nn
-from torch.nn import CrossEntropyLoss, MSELoss
+import time
 from torch.utils.data import (DataLoader, RandomSampler, SequentialSampler)
 from torch.utils.data.distributed import DistributedSampler
 from tensorboardX import SummaryWriter
@@ -143,7 +141,6 @@ def evaluate(args, model, tokenizer, prefix=""):
     eval_task_names = ("mnli", "mnli-mm") if args.task_name == "mnli" else (args.task_name,)
     eval_outputs_dirs = (args.output_dir, args.output_dir + '-MM') if args.task_name == "mnli" else (args.output_dir,)
     results = {}
-    # for dataset_type in ['dev', 'test']:
     for dataset_type in ['dev']:
         for eval_task, eval_output_dir in zip(eval_task_names, eval_outputs_dirs):
             eval_dataset = load_and_cache_examples(args, eval_task, tokenizer, dataset_type, evaluate=True)
@@ -165,6 +162,7 @@ def evaluate(args, model, tokenizer, prefix=""):
             eval_acc = 0
             index = 0
             for batch in tqdm(eval_dataloader, desc="Evaluating"):
+                step_time_start = time.time()
                 model.eval()
                 index += 1
                 batch = tuple(t.to(args.device) for t in batch)
@@ -180,6 +178,9 @@ def evaluate(args, model, tokenizer, prefix=""):
                     eval_loss += tmp_eval_loss.mean().item()
                 nb_eval_steps += 1
 
+                logger.info('The [infering] time of one batch is {}-'.format(time.time() - step_time_start))
+                print('The [infering] time of one batch is {}-'.format(time.time() - step_time_start))
+
                 if preds is None:
                     preds = logits.detach().cpu().numpy()
                     out_label_ids = inputs['labels'].detach().cpu().numpy()
@@ -187,7 +188,6 @@ def evaluate(args, model, tokenizer, prefix=""):
                     preds = np.append(preds, logits.detach().cpu().numpy(), axis=0)
                     out_label_ids = np.append(out_label_ids, inputs['labels'].detach().cpu().numpy(), axis=0)
             eval_loss = eval_loss / nb_eval_steps
-            # if args.task_name == 'quality_control':
             result = quality_control_metric(preds, out_label_ids, positive_label=positive_label)
             logger.info('{} result:  {}'.format(dataset_type, result))
             results[dataset_type] = result
@@ -201,9 +201,6 @@ def evaluate(args, model, tokenizer, prefix=""):
 
 
 def train(args, train_dataset, model, tokenizer):
-    """ Train the model """
-    # pretrained_model = model[0]
-    # et_model = model[1]
     args.train_batch_size = args.per_gpu_train_batch_size * max(1, args.n_gpu)
     train_sampler = RandomSampler(train_dataset) if args.local_rank == -1 else DistributedSampler(train_dataset)
     train_dataloader = DataLoader(train_dataset, sampler=train_sampler,
@@ -214,7 +211,6 @@ def train(args, train_dataset, model, tokenizer):
         args.num_train_epochs = args.max_steps // (len(train_dataloader) // args.gradient_accumulation_steps) + 1
     else:
         t_total = len(train_dataloader) // args.gradient_accumulation_steps * args.num_train_epochs
-    # Prepare optimizer and schedule (linear warmup and decay)
     no_decay = ['bias', 'LayerNorm.weight']
     optimizer_grouped_parameters = [
         {
@@ -225,7 +221,6 @@ def train(args, train_dataset, model, tokenizer):
     optimizer = AdamW(optimizer_grouped_parameters, lr=args.learning_rate, eps=args.adam_epsilon)
     scheduler = get_linear_schedule_with_warmup(optimizer, num_warmup_steps=args.warmup_steps,
                                                 num_training_steps=t_total, last_epoch=-1)
-    # scheduler = WarmupLinearSchedule(optimizer, warmup_steps=args.warmup_steps, t_total=t_total)
     if args.fp16:
         try:
             from apex import amp
@@ -260,14 +255,13 @@ def train(args, train_dataset, model, tokenizer):
     set_seed(args)  # Added here for reproductibility (even between python 2 and 3)
     for epoch in train_iterator:
         epoch_iterator = tqdm(train_dataloader, desc="Iteration", disable=args.local_rank not in [-1, 0])
-        # epoch_iterator = train_dataloader
         for step, batch in enumerate(epoch_iterator):
+            step_time_start = time.time()
             model.train()
             batch = tuple(t.to(args.device) for t in batch)
             inputs = {'input_ids': batch[0],
                       'attention_mask': batch[1],
                       'token_type_ids': batch[2] if args.model_type in ['bert', 'xlnet', 'unilm'] else None,
-                      # XLM and RoBERTa don't use segment_ids
                       'labels': batch[3], }
             outputs = model(**inputs)
             del inputs
@@ -278,9 +272,6 @@ def train(args, train_dataset, model, tokenizer):
             if args.gradient_accumulation_steps > 1:
                 loss = loss / args.gradient_accumulation_steps
 
-            # epoch_iterator.set_description("train epoch {}, step {}, loss {}".format(epoch, step, loss))
-            # if step % 100 == 0:
-            #     logger.info("train epoch {}, step {}, loss {}".format(epoch, step, loss))
             if args.fp16:
                 with amp.scale_loss(loss, optimizer) as scaled_loss:
                     scaled_loss.backward()
@@ -295,6 +286,8 @@ def train(args, train_dataset, model, tokenizer):
                 model.zero_grad()
                 global_step += 1
                 torch.cuda.empty_cache()
+                logger.info('The [training] time of one batch is {}-'.format(time.time() - step_time_start))
+                print('The [training] time of one batch is {}-'.format(time.time() - step_time_start))
             if args.local_rank in [-1, 0] and args.logging_steps > 0 and global_step % args.logging_steps == 0:
                 # Log metrics
                 if args.local_rank in [-1,

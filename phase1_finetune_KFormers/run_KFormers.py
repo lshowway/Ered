@@ -2,6 +2,7 @@ import time
 import logging
 import os
 import torch
+import ast
 import shutil
 import numpy as np
 import random
@@ -17,6 +18,7 @@ from transformers.models.bert import BertConfig, BertForSequenceClassification
 from transformers.models.bert.tokenization_bert_fast import BertTokenizerFast
 # roberta
 from transformers.models.roberta import RobertaConfig, RobertaForSequenceClassification
+from transformers import PretrainedConfig
 from transformers.models.roberta.tokenization_roberta_fast import RobertaTokenizerFast
 
 from transformers.optimization import AdamW, get_linear_schedule_with_warmup, \
@@ -43,7 +45,7 @@ KNOWLEDGE_MODEL_CLASSES = {
 
 
 
-def load_kformers(args, k_config_class, k_model_class, KFormersDownstreamModel):
+def load_kformers_luke(args, k_config_class, k_model_class, KFormersDownstreamModel):
 
     # 加载luke的参数
     model_archive = ModelArchive.load("../checkpoints/luke_large_500k")
@@ -59,16 +61,17 @@ def load_kformers(args, k_config_class, k_model_class, KFormersDownstreamModel):
     # word embedding
     word_emb = model_weights["embeddings.word_embeddings.weight"]  # 50265*768
 
-    if args.task_name in ['openentity', 'figer']:
+    if args.task_name in ['openentity', 'figer', 'sst2', 'eem']:
         args.model_config.vocab_size += 1
         args.model_config.entity_vocab_size = 2
         args.model_config.k_entity_vocab_size = len(args.entity_vocab)
 
         # word embedding
         word_emb = model_weights["embeddings.word_embeddings.weight"]  # 50265*768
-        marker_emb = word_emb[args.tokenizer.convert_tokens_to_ids(["@"])[0]].unsqueeze(0)  # 1*768
+        idx = args.tokenizer.convert_tokens_to_ids(["@"])[0] #
+        marker_emb = word_emb[idx].unsqueeze(0)  # 1*768
         model_weights["embeddings.word_embeddings.weight"] = torch.cat([word_emb, marker_emb])  # 后面拼一个marker_emb
-        args.tokenizer.add_special_tokens(dict(additional_special_tokens=[ENTITY_TOKEN]))
+        args.tokenizer.add_special_tokens(dict(additional_special_tokens=[ENTITY_TOKEN])) # 50266, 对应ENTITY_TOKEN,使用@的vector初始化
         # ent_knowledge embedding
         entity_emb = model_weights["entity_embeddings.entity_embeddings.weight"]  # 50W*256
         model_weights['k_ent_embeddings.entity_embeddings.weight'] = entity_emb  # ???还要多拼一个吗？
@@ -171,33 +174,91 @@ def load_kformers(args, k_config_class, k_model_class, KFormersDownstreamModel):
             if 'k_' in k and str(t) not in k:
                 v.requires_grad = False
     # == 在这里设置K-module的参数更新不更新 ==
+
     return args, kformers_model
 
 
+
+def load_kformers_roberta(args, k_config_class, k_model_class, KFormersDownstreamModel):
+
+    luke_archive = ModelArchive.load("../checkpoints/luke_large_500k")
+    # args.model_config = luke_archive.config
+
+    args.model_config.num_labels = args.num_labels
+    args.model_config.entity_emb_size = luke_archive.config.entity_emb_size
+    args.entity_vocab = luke_archive.entity_vocab
+    args.model_config.k_entity_vocab_size = luke_archive.config.entity_vocab_size
+
+    model_weights_luke = torch.load('../checkpoints/luke_large_500k/pytorch_model.bin', map_location=args.device)
+    model_weights_roberta = torch.load('../checkpoints/roberta-large/pytorch_model.bin', map_location=args.device)
+
+    config_k = k_config_class.from_pretrained(args.knowledge_model_name_or_path, output_hidden_states=True)  # 这是DistillBert的config
+    kformers_model = KFormersDownstreamModel(args=args, config_k=config_k,
+                                             backbone_knowledge_dict=args.backbone_knowledge_dict)
+    kformer_dict = kformers_model.state_dict()  # KFormers的全部参数
+    news_kformers_state_dict = OrderedDict()
+
+    # 加载entities权值
+    news_kformers_state_dict['kformers.k_ent_embeddings.entity_embeddings.weight'] = model_weights_luke["entity_embeddings.entity_embeddings.weight"]  # 50W*256
+    news_kformers_state_dict['kformers.k_ent_embeddings.entity_embedding_dense.weight'] = model_weights_luke['entity_embeddings.entity_embedding_dense.weight']
+    news_kformers_state_dict['kformers.k_ent_embeddings.LayerNorm.weight'] = model_weights_luke['entity_embeddings.LayerNorm.weight']
+    news_kformers_state_dict['kformers.k_ent_embeddings.LayerNorm.bias'] = model_weights_luke['entity_embeddings.LayerNorm.bias']
+
+    for key, value in model_weights_roberta.items():
+        key = key.replace('roberta', 'kformers')
+        if 'embeddings' in key or 'pooler' in key:
+            news_kformers_state_dict[key] = value
+        elif 'encoder' in key:
+            i = key.split('kformers.encoder.layer.')[-1]
+            i = i.split('.')[0]
+            i = int(i)
+            key = key.replace('kformers.encoder.layer.%s' % i, 'kformers.encoder.layer.%s.backbone_layer' % i)
+            news_kformers_state_dict[key] = value
+        else:
+            pass
+    # 加载distilbert的预训练参数，并把值赋给kformers
+    backbone_knowledge_dict_reverse = {v: k for k, v in args.backbone_knowledge_dict.items()}
+    knowledge_model_dict = k_model_class.from_pretrained(args.knowledge_model_name_or_path,
+                                                         config=config_k).state_dict()
+    for key, value in knowledge_model_dict.items():
+        key = key.replace(args.knowledge_model_type, 'kformers')
+        if 'embeddings' in key:
+            key = key.replace('kformers.embeddings', 'kformers.k_des_embeddings')
+            news_kformers_state_dict[key] = value
+        elif 'layer' in key:
+            j = key.split('kformers.transformer.layer.')[-1]
+            j = j.split('.')[0]
+            i = backbone_knowledge_dict_reverse[int(j)]
+            key = key.replace('kformers.transformer.layer.%s' % j, 'kformers.encoder.layer.%s.k_layer' % i)
+            news_kformers_state_dict[key] = value
+        else:
+            pass
+
+    kformer_dict.update(news_kformers_state_dict)
+    kformers_model.load_state_dict(state_dict=kformer_dict)
+
+    # == 在这里设置K-module的参数更新不更新 ==
+    t = backbone_knowledge_dict_reverse[5]
+    if not args.update_K_module:
+        for k, v in kformers_model.named_parameters():
+            if 'k_' in k and str(t) not in k:
+                v.requires_grad = False
+    # == 在这里设置K-module的参数更新不更新 ==
+
+    return args, kformers_model
+
+
+
+
 def do_train(args, model, train_dataset, val_dataset, test_dataset=None):
+
     args.total_batch_size = args.train_batch_size * max(1, args.n_gpu)
     train_sampler = RandomSampler(train_dataset) if args.local_rank == -1 else DistributedSampler(train_dataset)
     train_dataloader = DataLoader(train_dataset, sampler=train_sampler, batch_size=args.total_batch_size)
 
-    # param_optimizer = list(model.named_parameters())
     param_optimizer = [(k, v) for k, v in model.named_parameters() if v.requires_grad]
 
     no_decay = ['bias', 'LayerNorm.bias', 'LayerNorm.weight']
-
-    w = 1.2
-
-    # optimizer_grouped_parameters = [
-    #     {'params': [p for n, p in param_optimizer if not any(
-    #         nd in n for nd in no_decay) and 'k_' in n], 'weight_decay': args.weight_decay, 'lr': args.learning_rate * w},
-    #     {'params': [p for n, p in param_optimizer if not any(
-    #         nd in n for nd in no_decay) and 'k_' not in n], 'weight_decay': args.weight_decay,
-    #      'lr': args.learning_rate},
-    #
-    #     {'params': [p for n, p in param_optimizer if any(
-    #         nd in n for nd in no_decay) and 'k_' in n], 'weight_decay': 0.0, 'lr': args.learning_rate * w},
-    #     {'params': [p for n, p in param_optimizer if any(
-    #         nd in n for nd in no_decay) and 'k_' not in n], 'weight_decay': 0.0, 'lr': args.learning_rate},
-    # ]
 
     optimizer_grouped_parameters = [
         {'params': [p for n, p in param_optimizer if not any(
@@ -234,7 +295,6 @@ def do_train(args, model, train_dataset, val_dataset, test_dataset=None):
         model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[args.local_rank],
                                                           output_device=args.local_rank,
                                                           find_unused_parameters=True)
-
     # Train!
     logger.info("***** Running training *****")
     logger.info("  Num examples = %d", len(train_dataloader) * args.total_batch_size)
@@ -247,29 +307,37 @@ def do_train(args, model, train_dataset, val_dataset, test_dataset=None):
     logger.info("  Total optimization steps = %d", t_total)
 
     global_step = 0
-
     if args.local_rank in [-1, 0]:
-        tb_writer = SummaryWriter(log_dir="./finetune_runs/", purge_step=global_step)
+        tb_writer = SummaryWriter(log_dir="./kformers_runs/", purge_step=global_step)
 
     train_iterator = trange(args.epochs, desc="Epoch", disable=args.local_rank not in [-1, 0])
     set_seed(args)  # Added here for reproducebility (even between python 2 and 3)
     start_time = time.time()
     best_dev_result = 0.0
     for epoch in train_iterator:
-        train_sampler = RandomSampler(train_dataset) if args.local_rank == -1 else DistributedSampler(train_dataset)
-        train_dataloader = DataLoader(train_dataset, sampler=train_sampler, batch_size=args.train_batch_size)
+        if epoch > 0:
+            # train_dataloader.sampler.set_epoch(epoch)
+            train_sampler = RandomSampler(train_dataset) if args.local_rank == -1 else DistributedSampler(train_dataset)
+            train_dataloader = DataLoader(train_dataset, sampler=train_sampler, batch_size=args.train_batch_size)
         epoch_iterator = tqdm(train_dataloader, desc="Training", disable=args.local_rank not in [-1, 0])
         for step, batch in enumerate(epoch_iterator):
+            step_start_time = time.time()
             loss = 0.0
             model.train()
             batch = tuple(t.to(args.device) for t in batch)
-
             if args.task_name in ['openentity', 'figer', 'fewrel', 'tacred']:
                 input_ids, input_mask, segment_ids, start_id = batch[0], batch[1], batch[2], batch[3]
                 ent_ids, ent_mask, ent_seg_ids, ent_pos_ids = batch[4], batch[5], batch[6], batch[7]
                 k_ent_ids, k_label = batch[8], batch[9]
                 des_input_ids, des_att_mask_one, des_segment_one, des_mask = batch[10], batch[11], batch[12], batch[13]
                 label = batch[-1]
+            elif args.task_name in ['sst2', 'eem']:
+                input_ids, input_mask, segment_ids = batch[0], batch[1], batch[2]
+                ent_ids, ent_mask, ent_seg_ids, ent_pos_ids = batch[3], batch[4], batch[5], batch[6]
+                k_ent_ids, k_label = batch[7], batch[8]
+                des_input_ids, des_att_mask_one, des_segment_one, des_mask = batch[9], batch[10], batch[11], batch[12]
+                label = batch[-1]
+                start_id = None
 
             inputs = {"input_ids": input_ids,
                       "attention_mask": input_mask,
@@ -309,50 +377,51 @@ def do_train(args, model, train_dataset, val_dataset, test_dataset=None):
                 scheduler.step()  # Update learning rate schedule
                 model.zero_grad()
                 global_step += 1
-
                 del batch
                 torch.cuda.empty_cache()
-            if args.local_rank in [-1, 0] and args.logging_steps > 0 and global_step % args.logging_steps == 0:
-                logger.info("epoch {}, step {}, global_step {}, train_loss: {:.5f}".format(epoch, step + 1, global_step, loss))
-            if args.local_rank in [-1, 0] and args.eval_steps > 0 and global_step > 0 and global_step % args.eval_steps == 0:
-                eval_results, eval_loss = do_eval(model, args, val_dataset, global_step)
-                test_results, test_loss = do_eval(model, args, test_dataset, global_step)
-                tb_writer.add_scalar('lr', scheduler.get_last_lr()[0], global_step)
-                tb_writer.add_scalar('train_loss', loss, global_step)
-                tb_writer.add_scalar('dev_loss', eval_loss, global_step)
-                tb_writer.add_scalar('test_loss', test_loss, global_step)
-                t = eval_results[final_metric[args.task_name]]
-                if t > best_dev_result:  # f1
-                    best_dev_result = eval_results[final_metric[args.task_name]]
-                    print('epoch: ', epoch, 'global step: ', global_step, 'eval results: ', eval_results, '**')
-                    print('epoch: ', epoch, 'global step: ', global_step, 'test results: ', test_results, '**')
+                logger.info('The training time of one batch is {}'.format(time.time() - step_start_time))
+                print('The training time of one batch is {}'.format(time.time() - step_start_time))
+                # ============================================== 以下要写到acc里面，要不然会打印很多遍
+                if args.local_rank in [-1, 0] and args.logging_steps > 0 and global_step % args.logging_steps == 0:
+                    logger.info("epoch {}, step {}, global_step {}, train_loss: {:.5f}".format(epoch, step + 1, global_step, loss))
+                if args.local_rank in [-1, 0] and args.eval_steps > 0 and global_step > 0 and global_step % args.eval_steps == 0:
+                    eval_results, eval_loss = do_eval(model, args, val_dataset, global_step)
+                    test_results, test_loss = do_eval(model, args, test_dataset, global_step)
+                    tb_writer.add_scalar('lr', scheduler.get_last_lr()[0], global_step)
+                    tb_writer.add_scalar('train_loss', loss, global_step)
+                    tb_writer.add_scalar('dev_loss', eval_loss, global_step)
+                    tb_writer.add_scalar('test_loss', test_loss, global_step)
+                    t = eval_results[final_metric[args.task_name]]
+                    if t > best_dev_result:  # f1
+                        best_dev_result = eval_results[final_metric[args.task_name]]
+                        logger.info('rank: {}, epoch: {}, global step: {}, dev results: {}**'.format(args.local_rank, epoch, global_step, eval_results))
+                        logger.info('epoch: {}, global step: {}, test results: {} **'.format(epoch, global_step, test_results))
+                        print('rank: {}, epoch: {}, global step: {}, dev results: {}**'.format(args.local_rank, epoch, global_step, eval_results))
+                        print('epoch: {}, global step: {}, test results: {} **'.format(epoch, global_step, test_results))
+                    else:
+                        logger.info('rank: {} epoch: {}, global step: {}, dev results: {}'.format(args.local_rank, epoch, global_step, eval_results))
+                        logger.info('epoch: {}, global step: {}, test results: {}'.format(epoch, global_step, test_results))
+                        print('rank: {} epoch: {}, global step: {}, dev results: {}'.format(args.local_rank, epoch, global_step, eval_results))
+                        print('epoch: {}, global step: {}, test results: {}'.format(epoch, global_step, test_results))
 
-                    # logging.info('Saving checkpoint...')
-                    # output_dir = os.path.join(args.output_dir, 'checkpoint-{}-{}'.format(global_step, test_results[final_metric[args.task_name]]))
-                    # if not os.path.exists(output_dir):
-                    #     os.makedirs(output_dir)
-                    # model_to_save = model.module if hasattr(model, 'module') else model  # Take care of distributed/parallel training
-                    # torch.save(model_to_save.state_dict(), os.path.join(output_dir, "pytorch_model.bin"))  # save checkpoint
-                    # logger.info("Save model checkpoint to %s", output_dir)
-                else:
-                    print('epoch: ', epoch, 'global step: ', global_step, 'eval results: ', eval_results)
-                    print('epoch: ', epoch, 'global step: ', global_step, 'test results: ', test_results)
-            if args.local_rank in [-1, 0] and args.save_steps > 0 and global_step > 0 and global_step % args.save_steps == 0:
-                # Save model checkpoint
-                logging.info('Saving checkpoint...')
-                output_dir = os.path.join(args.output_dir, 'checkpoint-{}'.format(global_step))
-                if not os.path.exists(output_dir):
-                    os.makedirs(output_dir)
-                model_to_save = model.module if hasattr(model, 'module') else model  # Take care of distributed/parallel training
-                torch.save(model_to_save.state_dict(), os.path.join(output_dir, "pytorch_model.bin"))  # save checkpoint
-                logger.info("Save model checkpoint, optimizer, scheduler, args, global_step to %s", output_dir)
-                # control the number of checkpoints to save
-                if (global_step / args.save_steps) > args.max_save_checkpoints:
-                    try:
-                        shutil.rmtree(os.path.join(args.output_dir, 'checkpoint-{}'.format(
-                            global_step - args.max_save_checkpoints * args.save_steps)))
-                    except OSError as e:
-                        logging.error(e)
+                if args.local_rank in [-1, 0] and args.save_steps > 0 and global_step > 0 and global_step % args.save_steps == 0:
+                    # Save model checkpoint
+                    logging.info('Saving checkpoint...')
+                    output_dir = os.path.join(args.output_dir, 'checkpoint-{}'.format(global_step))
+                    if not os.path.exists(output_dir):
+                        os.makedirs(output_dir)
+                    model_to_save = model.module if hasattr(model, 'module') else model  # Take care of distributed/parallel training
+                    torch.save(model_to_save.state_dict(), os.path.join(output_dir, "pytorch_model.bin"))  # save checkpoint
+                    logger.info("Save model checkpoint, optimizer, scheduler, args, global_step to %s", output_dir)
+                    # control the number of checkpoints to save
+                    if (global_step / args.save_steps) > args.max_save_checkpoints:
+                        try:
+                            shutil.rmtree(os.path.join(args.output_dir, 'checkpoint-{}'.format(
+                                global_step - args.max_save_checkpoints * args.save_steps)))
+                        except OSError as e:
+                            logging.error(e)
+                # ==============================================
+
             if 0 < args.max_steps < global_step:
                 epoch_iterator.close()
                 break
@@ -364,11 +433,20 @@ def do_train(args, model, train_dataset, val_dataset, test_dataset=None):
             t = eval_results[final_metric[args.task_name]]
             if t > best_dev_result:  # f1
                 best_dev_result = eval_results[final_metric[args.task_name]]
-                print('epoch: ', epoch, 'global step: ', global_step, 'eval results: ', eval_results, '**')
-                print('epoch: ', epoch, 'global step: ', global_step, 'test results: ', test_results, '**')
+                logger.info('rank: {}, epoch: {}, global step: {}, dev results: {}**'.format(args.local_rank, epoch,
+                                                                                             global_step, eval_results))
+                logger.info('epoch: {}, global step: {}, test results: {} **'.format(epoch, global_step, test_results))
+                print('rank: {}, epoch: {}, global step: {}, dev results: {}**'.format(args.local_rank, epoch,
+                                                                                       global_step, eval_results))
+                print('epoch: {}, global step: {}, test results: {} **'.format(epoch, global_step, test_results))
             else:
-                print('epoch: ', epoch, 'global step: ', global_step, 'eval results: ', eval_results)
-                print('epoch: ', epoch, 'global step: ', global_step, 'test results: ', test_results)
+                logger.info(
+                    'rank: {} epoch: {}, global step: {}, dev results: {}'.format(args.local_rank, epoch, global_step,
+                                                                                  eval_results))
+                logger.info('epoch: {}, global step: {}, test results: {}'.format(epoch, global_step, test_results))
+                print('rank: {} epoch: {}, global step: {}, dev results: {}'.format(args.local_rank, epoch, global_step,
+                                                                                    eval_results))
+                print('epoch: {}, global step: {}, test results: {}'.format(epoch, global_step, test_results))
 
             if args.save_steps > 0:
                 logging.info('Saving checkpoint...')
@@ -399,7 +477,6 @@ def do_eval(model, args, val_dataset, global_step):
     total_loss = 0.0
     eval_iterator = tqdm(val_dataloader, desc="Evaluating", disable=args.local_rank not in [-1, 0])
     for step, batch in enumerate(eval_iterator):
-
         model.eval()
         batch = tuple(t.to(args.device) for t in batch)
         with torch.no_grad():
@@ -408,35 +485,46 @@ def do_eval(model, args, val_dataset, global_step):
                 ent_ids, ent_mask, ent_seg_ids, ent_pos_ids = batch[4], batch[5], batch[6], batch[7]
                 k_ent_ids, k_label = batch[8], batch[9]
                 des_input_ids, des_att_mask_one, des_segment_one, des_mask = batch[10], batch[11], batch[12], batch[13]
-                labels = batch[-1]
+                label = batch[-1]
+            elif args.task_name in ['sst2', 'eem']:
 
-            inputs = {"input_ids": input_ids,
-                      "attention_mask": input_mask,
-                      "token_type_ids": segment_ids,
+                input_ids, input_mask, segment_ids = batch[0], batch[1], batch[2]
+                ent_ids, ent_mask, ent_seg_ids, ent_pos_ids = batch[3], batch[4], batch[5], batch[6]
+                k_ent_ids, k_label = batch[7], batch[8]
+                des_input_ids, des_att_mask_one, des_segment_one, des_mask = batch[9], batch[10], batch[11], batch[12]
+                label = batch[-1]
+                start_id = None
+            with torch.no_grad():
+                inputs = {"input_ids": input_ids,
+                          "attention_mask": input_mask,
+                          "token_type_ids": segment_ids,
 
-                      "start_id": start_id,
-                      "entity_ids": ent_ids,
-                      "entity_position_ids": ent_pos_ids,
-                      "entity_segment_ids": ent_seg_ids,
-                      "entity_attention_mask": ent_mask,
+                          "start_id": start_id,
+                          "entity_ids": ent_ids,
+                          "entity_position_ids": ent_pos_ids,
+                          "entity_segment_ids": ent_seg_ids,
+                          "entity_attention_mask": ent_mask,
 
-                      "k_ent_ids": k_ent_ids,
-                      "k_label": k_label,
+                          "k_ent_ids": k_ent_ids,
+                          "k_label": k_label,
 
-                      "k_des_ids": des_input_ids,
-                      "k_des_mask_one": des_att_mask_one,
-                      "k_des_seg": des_segment_one,
-                      "k_des_mask": des_mask,
-                      "labels": None,
-                      }
-
-            logits = model(**inputs)
+                          "k_des_ids": des_input_ids,
+                          "k_des_mask_one": des_att_mask_one,
+                          "k_des_seg": des_segment_one,
+                          "k_des_mask": des_mask,
+                          "labels": None,
+                          }
+                step_time_start = time.time()
+                logits = model(**inputs)
+                logger.info('The inferring time of one batch is {}-'.format(time.time() - step_time_start))
+                print('The inferring time of one batch is {}-'.format(time.time() - step_time_start))
+                del batch
             if preds is None:
                 preds = logits.detach().cpu().numpy()
-                out_label_ids = labels.detach().cpu().numpy()
+                out_label_ids = label.detach().cpu().numpy()
             else:
                 preds = np.append(preds, logits.detach().cpu().numpy(), axis=0)
-                out_label_ids = np.append(out_label_ids, labels.detach().cpu().numpy(), axis=0)
+                out_label_ids = np.append(out_label_ids, label.detach().cpu().numpy(), axis=0)
 
     if args.task_name in ['openentity',  'figer', 'sst2', 'eem']:
         pass
@@ -459,12 +547,22 @@ def set_seed(args):
 
 def main():
     args = parse_args()
+
+    # args.alpha = round(random.random(), 2)
+    # args.beta = round(random.random(), 2)
+    # args.max_ent_num = random.choice([2, 3, 4, 5, 6])
+    # args.max_des_num = random.choice([1, 2, 3])
+    # args.learning_rate = random.uniform(5e-6, 2e-5)
+    # args.warmup_steps = random.uniform(0.06, 0.11)
+
     if args.task_name in ['openentity', 'figer']:
         from KFormers_roberta_distilbert_modeling import KFormersForEntityTyping as KFormersDownstreamModel
     elif args.task_name in ['tacred', 'fewrel']:
         from KFormers_roberta_distilbert_modeling import KFormersForRelationClassification as KFormersDownstreamModel
-    elif args.task_name in ['sst2', 'eem']:
+    elif args.task_name in ['sst2']:
         from KFormers_roberta_distilbert_modeling import KFormersForSequenceClassification as KFormersDownstreamModel
+    elif args.task_name in ['eem']:
+        from KFormers_roberta_distilbert_modeling import KFormersForSequencePairClassification as KFormersDownstreamModel
     else:
         KFormersDownstreamModel = None
 
@@ -480,6 +578,9 @@ def main():
         torch.distributed.init_process_group(backend='nccl')
         args.n_gpu = 1
     args.device = device
+
+    args.backbone_knowledge_dict = ast.literal_eval(args.backbone_knowledge_dict) if isinstance(
+        args.backbone_knowledge_dict, str) else args.backbone_knowledge_dict
 
     # Setup logging
     logging.basicConfig(format='%(asctime)s - %(levelname)s - %(name)s -   %(message)s',
@@ -509,22 +610,18 @@ def main():
     num_labels = len(label_list)
     args.num_labels = num_labels
     args.output_mode = output_modes[args.task_name]
-
-    args, model = load_kformers(args, k_config_class, k_model_class, KFormersDownstreamModel)
+    if args.backbone_model_type == 'luke':
+        args, model = load_kformers_luke(args, k_config_class, k_model_class, KFormersDownstreamModel)
+    else:
+        args.model_config = backbone_config_class.from_pretrained(args.backbone_model_name_or_path)
+        args, model = load_kformers_roberta(args, k_config_class, k_model_class, KFormersDownstreamModel)
     if args.local_rank == 0:
         torch.distributed.barrier()  # Make sure only the first process in distributed training will download model & vocab
     logging.info('loading backbone model: {}, knowledge module model: {}'.format(args.backbone_model_type,
                                                                                  args.knowledge_model_type))
     model.to(device)
 
-    print('backbone_seq_length=', args.backbone_seq_length, ', knowledge_seq_length=', args.knowledge_seq_length,
-          ', max_ent_num=', args.max_ent_num, ', max_des_num=', args.max_des_num, ', train_batch_size=', args.train_batch_size,
-          ', learning_rate=', args.learning_rate, ', alpha, beta=', args.alpha, args.beta, ', seed=', args.seed)
 
-    logging.info('backbone_seq_length={}, knowledge_seq_length={}, max_ent_num={}, max_des_num={}, '
-                 'train_batch_size={}, learning_rate={}, alpha, beta={}, {}, seed={}'.format(args.backbone_seq_length,
-                 args.knowledge_seq_length, args.max_ent_num, args.max_des_num,
-                 args.train_batch_size, args.learning_rate, args.alpha, args.beta, args.seed))
     # ## Training
     if args.mode == 'train':
         from data_utils import load_and_cache_examples
@@ -539,6 +636,22 @@ def main():
                                               dataset_type='dev', evaluate=True)
         train_dataset = load_and_cache_examples(args, processor, backbone_tokenizer, knowledge_tokenizer,
                                                 dataset_type='train', evaluate=False)
+
+        print('backbone_seq_length=', args.backbone_seq_length, ', knowledge_seq_length=',
+              args.knowledge_seq_length,
+              ', max_ent_num=', args.max_ent_num, ', max_des_num=', args.max_des_num,
+              ', train_batch_size=', args.train_batch_size,
+              ', learning_rate=', args.learning_rate, ', alpha, beta=', args.alpha,
+              args.beta, ', seed=', args.seed)
+
+        logging.info(
+            'backbone_seq_length={}, knowledge_seq_length={}, max_ent_num={}, max_des_num={}, '
+            'train_batch_size={}, learning_rate={}, alpha, beta={}, {}, seed={}'.format(
+                args.backbone_seq_length,
+                args.knowledge_seq_length, args.max_ent_num, args.max_des_num,
+                args.train_batch_size, args.learning_rate, args.alpha, args.beta,
+                args.seed))
+
         do_train(args, model, train_dataset, val_dataset, test_dataset)
 
 

@@ -6,18 +6,27 @@ from parameters import parse_args
 
 args = parse_args()
 
-
 if args.backbone_model_type == 'luke':
     from luke_modeling import \
         (
         RobertaEmbeddings as BackboneEmbeddings,
         EntityAwareLayer as BackboneLayer,
-        LukeEntityAwareAttentionModel as BackbonePreTrainedModel,
-        # BertPooler as BackbonePooler,
         KnowledgeEntityEmbeddings,
         EntityEmbeddings,
-        LukeModel
+        LukeModel as BackboneModel
     )  # Bert
+elif args.backbone_model_type == "roberta":
+    from transformers.models.roberta.modeling_roberta import \
+        (
+        RobertaClassificationHead,
+        RobertaEmbeddings as BackboneEmbeddings,
+        RobertaLayer as BackboneLayer,
+        RobertaModel as BackboneModel
+    )
+    from luke_modeling import \
+        (
+        KnowledgeEntityEmbeddings
+    )
 else:
     pass
 if args.knowledge_model_type == 'distilbert':
@@ -26,7 +35,6 @@ if args.knowledge_model_type == 'distilbert':
         Embeddings as KEmbeddings,
         TransformerBlock as KnowledgeLayer,
     )  # 这个是k module
-
 
 
 class KFormersLayer(nn.Module):
@@ -43,7 +51,7 @@ class KFormersLayer(nn.Module):
     def forward(self, word_hidden_states, word_attention_mask,
                 entity_hidden_states, entity_attention_mask,
                 k_entity_hidden_states=None,
-                k_des_hidden_states=None,  k_des_attention_mask=None, k_des_mask=None
+                k_des_hidden_states=None, k_des_attention_mask=None, k_des_mask=None
                 ):
 
         word_size = word_hidden_states.size(1)
@@ -54,34 +62,48 @@ class KFormersLayer(nn.Module):
 
         word_hidden_states = torch.cat([word_hidden_states, k_entity_hidden_states], dim=1)
         batch_size, ent_num, _ = k_entity_hidden_states.size()
-        ent_attention_mask = torch.ones(batch_size, ent_num, device=word_hidden_states.device)
-        word_attention_mask = torch.cat([word_attention_mask, ent_attention_mask], dim=-1)
+        if word_attention_mask.dim() == 2:
+            ent_attention_mask = torch.ones(batch_size, ent_num, device=word_hidden_states.device)
+            word_attention_mask = torch.cat([word_attention_mask, ent_attention_mask], dim=-1)
+        elif word_attention_mask.dim() == 4:
+            ent_attention_mask = torch.ones(batch_size, 1, 1, ent_num, device=word_hidden_states.device)
+            k_des_mask = k_des_mask[:, None, None, :]
+            word_attention_mask = torch.cat([word_attention_mask, ent_attention_mask], dim=-1)
 
         if self.k_layer is not None:
             batch_size, des_num, length, d = k_des_hidden_states.size()
             k_layer_outputs = self.k_layer(k_des_hidden_states.view(batch_size, des_num * length, d),
                                            k_des_attention_mask.view(batch_size, des_num * length))
             k_layer_outputs = k_layer_outputs[-1].reshape(batch_size, des_num, length, d)
-            k_des_to_backbone = k_layer_outputs[:, :, 0, :]  # batch K d2
+            # description representation
+            # k_des_to_backbone = k_layer_outputs[:, :, 0, :]  # batch K d2
+            k_des_to_backbone = torch.mean(k_layer_outputs, dim=2, keepdim=False)  # batch K d2
             k_des_to_backbone = self.map(k_des_to_backbone)  # batch K d description representation
 
             # description_state, entity_state, original_input_state整合到一起
             word_hidden_states = torch.cat([word_hidden_states, k_des_to_backbone], dim=1)  # batch L1+K1+K2 d
-            word_attention_mask = torch.cat([word_attention_mask, k_des_mask], dim=-1) # batch 1 1 L1+K1+K2
+            word_attention_mask = torch.cat([word_attention_mask, k_des_mask], dim=-1)  # batch 1 1 L1+K1+K2
 
-        word_attention_output, entity_attention_output = self.backbone_layer(
+        t = self.backbone_layer(
             word_hidden_states, word_attention_mask, entity_hidden_states, entity_attention_mask
-        ) # batch L1 d, batch 2 d
+        )  # batch L1 d, batch 2 d
         # [0]: word_vec, [1]:k_ent_vec
         # [2, 3] = des_vec and mapped des_vec # batch des_num 1024
         # [-1]: entity_vec
-        return word_attention_output[:, :word_size, :], \
-               word_attention_output[:, word_size: word_size+ent_size, :], \
-               k_layer_outputs, \
-               k_des_to_backbone, \
-               entity_attention_output
-
-
+        if len(t) == 2:
+            word_attention_output, entity_attention_output = t
+            return word_attention_output[:, :word_size, :], \
+                   word_attention_output[:, word_size: word_size + ent_size, :], \
+                   k_layer_outputs, \
+                   k_des_to_backbone, \
+                   entity_attention_output  # entity identifier
+        else:
+            word_attention_output, = t
+            return word_attention_output[:, :word_size, :], \
+                   word_attention_output[:, word_size: word_size + ent_size, :], \
+                   k_layer_outputs, \
+                   k_des_to_backbone, \
+                   None
 
 
 class KFormersEncoder(nn.Module):
@@ -100,7 +122,7 @@ class KFormersEncoder(nn.Module):
     def forward(self, word_hidden_states, attention_mask,
                 entity_hidden_states, entity_attention_mask,
                 k_entity_hidden_states=None,
-                k_des_hidden_states=None, k_des_attention_mask=None, k_des_mask=None,):
+                k_des_hidden_states=None, k_des_attention_mask=None, k_des_mask=None, ):
 
         last_des_hidden_states = k_des_hidden_states  # batch des_num L d1
         last_des_to_backbone = None
@@ -111,7 +133,8 @@ class KFormersEncoder(nn.Module):
             layer_outputs = layer_module(word_hidden_states, attention_mask,
                                          entity_hidden_states, entity_attention_mask,
                                          k_entity_hidden_states=k_entity_hidden_states,
-                                         k_des_hidden_states=k_des_hidden_states, k_des_attention_mask=k_des_attention_mask,
+                                         k_des_hidden_states=k_des_hidden_states,
+                                         k_des_attention_mask=k_des_attention_mask,
                                          k_des_mask=k_des_mask)
             word_hidden_states = layer_outputs[0]
             k_entity_hidden_states = layer_outputs[1]
@@ -121,30 +144,30 @@ class KFormersEncoder(nn.Module):
                 last_des_to_backbone = layer_outputs[3]
             entity_hidden_states = layer_outputs[-1]
 
-        outputs = (word_hidden_states, k_entity_hidden_states, last_des_hidden_states, last_des_to_backbone, entity_hidden_states)
+        outputs = (
+        word_hidden_states, k_entity_hidden_states, last_des_hidden_states, last_des_to_backbone, entity_hidden_states)
         return outputs
 
 
-
-class KFormersModel(LukeModel):
+class KFormersModel(BackboneModel):
     def __init__(self, config, config_k, backbone_knowledge_dict):
-        # super(KFormersModel, self).__init__()
         super(KFormersModel, self).__init__(config)
         self.config = config
         self.config_k = config_k
         self.embeddings = BackboneEmbeddings(config)  # roberta
         self.embeddings.token_type_embeddings.requires_grad = False  # why?
-
-        self.entity_embeddings = EntityEmbeddings(config)
+        if config.backbone_model_type == "luke":
+            self.entity_embeddings = EntityEmbeddings(config)  # entity identifier, only LUKE needs
         self.k_ent_embeddings = KnowledgeEntityEmbeddings(config)  # 50w*256
-        self.k_des_embeddings = KEmbeddings(config_k) # distilbert-description
+        self.k_des_embeddings = KEmbeddings(config_k)  # distilbert-description
 
         self.encoder = KFormersEncoder(config, config_k, backbone_knowledge_dict)
 
         # self.pooler = BackbonePooler(config)
         self.pooler = None
+
     #
-    def _compute_extended_attention_mask(self, word_attention_mask, entity_attention_mask, k_ent_mask=None,):
+    def _compute_extended_attention_mask(self, word_attention_mask, entity_attention_mask, k_ent_mask=None, ):
         attention_mask = word_attention_mask
 
         attention_mask = torch.cat([attention_mask, entity_attention_mask], dim=1)
@@ -155,26 +178,28 @@ class KFormersModel(LukeModel):
 
         return extended_attention_mask
 
-    def forward(self,input_ids=None, attention_mask=None, token_type_ids=None, start_id=None,
+    def forward(self, input_ids=None, attention_mask=None, token_type_ids=None, start_id=None,
                 entity_ids=None, entity_attention_mask=None, entity_segment_ids=None, entity_position_ids=None,
                 k_ent_ids=None, k_label=None,
-                k_des_ids=None, k_des_mask_one=None,  k_des_seg=None, k_des_mask=None):
+                k_des_ids=None, k_des_mask_one=None, k_des_seg=None, k_des_mask=None):
 
         word_embeddings = self.embeddings(input_ids, token_type_ids)
-        entity_embeddings = self.entity_embeddings(entity_ids, entity_position_ids, entity_segment_ids)
+        if self.config.backbone_model_type == "luke":
+            entity_embeddings = self.entity_embeddings(entity_ids, entity_position_ids, entity_segment_ids)
+        else:
+            entity_embeddings = None
+            entity_attention_mask = None
+            attention_mask = attention_mask[:, None, None, :]
         k_entity_embeddings = self.k_ent_embeddings(k_ent_ids)
 
         batch, des_num, length = k_des_ids.size()
         k_des_embeddings = self.k_des_embeddings(k_des_ids.view(-1, length)).reshape(batch, des_num, length, -1)
 
-
-        # attention_mask = self._compute_extended_attention_mask(attention_mask,
-        #                                                        entity_attention_mask,
-        #                                                        )  # 后两维度拼在一起
         encoder_outputs = self.encoder(word_embeddings, attention_mask,
                                        entity_embeddings, entity_attention_mask,
                                        k_entity_hidden_states=k_entity_embeddings,
-                                       k_des_hidden_states=k_des_embeddings, k_des_attention_mask=k_des_mask_one, k_des_mask=k_des_mask,
+                                       k_des_hidden_states=k_des_embeddings, k_des_attention_mask=k_des_mask_one,
+                                       k_des_mask=k_des_mask,
                                        )
         # word_hidden_states, k_entity_hidden_states, last_des_hidden_states, last_des_to_backbone, entity_hidden_states
         original_text_output, k_ent_output, _, mapped_k_des_output, entity_output = encoder_outputs
@@ -182,7 +207,9 @@ class KFormersModel(LukeModel):
             return (original_text_output, None, entity_output, k_entity_embeddings, k_ent_output, mapped_k_des_output)
         else:
             pooled_output = self.pooler(original_text_output)
-            return (original_text_output, pooled_output, entity_output, k_entity_embeddings, k_ent_output, mapped_k_des_output)
+            return (
+            original_text_output, pooled_output, entity_output, k_entity_embeddings, k_ent_output, mapped_k_des_output)
+
 
 
 # ---------------------------------------------------------------------
@@ -192,10 +219,13 @@ class KFormersForEntityTyping(nn.Module):
         self.num_labels = args.num_labels
         self.ent_num = args.max_ent_num
 
+        self.alpha = args.alpha
         self.beta = args.beta
 
         args.add_pooling_layer = False
         config = args.model_config
+        config.backbone_model_type = args.backbone_model_type
+
         self.config = config
 
         self.kformers = KFormersModel(config, config_k, backbone_knowledge_dict)
@@ -234,26 +264,27 @@ class KFormersForEntityTyping(nn.Module):
                 k_des_ids=k_des_ids, k_des_mask_one=k_des_mask_one,  k_des_seg=k_des_seg, k_des_mask=k_des_mask, )
 
         original_text_output, pooled_output, entity_output, k_entity_embeddings, k_ent_output, mapped_k_des_output = outputs  # batch L d
+        original_text_output = self.dropout(original_text_output)
 
-        # 主loss
-        feature_vector = self.dropout(entity_output[:, 0, :])
-        logits = self.typing(feature_vector)
-
-        # 第一个辅助loss：ent增强&des增强
-        start_id = start_id.unsqueeze(1)  # batch 1 L
-        anchor_vec = torch.bmm(start_id, original_text_output).squeeze(1)  # batch d
+        # main loss
+        if entity_output:  # for luke
+            entity_vec = self.dropout(entity_output[:, 0, :])
+        else:
+            start_ids = start_id.unsqueeze(1)  # batch 1 L
+            entity_vec = torch.bmm(start_ids, original_text_output).squeeze(1)
+        logits = self.typing(entity_vec)
 
         if labels is None:
             return logits
         else:
             main_loss = F.binary_cross_entropy_with_logits(logits.view(-1), labels.view(-1).type_as(logits))
 
-            # 第二个辅助loss：区分污染和增强
-            aug_pl_logits = self.aug_pl_fc(k_ent_output + anchor_vec.unsqueeze(1))  # batch K d -> batch K/batch K C
+            # second auxiliary loss: ent enhancement/pollution
+            aug_pl_logits = self.aug_pl_fc(k_ent_output + entity_vec.unsqueeze(1))  # batch K d -> batch K/batch K C
 
             aug_pl_loss = nn.CrossEntropyLoss()(aug_pl_logits.view(input_ids.size(0), -1), k_label.view(-1))
 
-            return logits, main_loss +  self.beta * aug_pl_loss
+            return logits, main_loss + self.beta * aug_pl_loss
 
 
 
@@ -263,10 +294,13 @@ class KFormersForRelationClassification(nn.Module):
         self.num_labels = args.num_labels
         self.ent_num = args.max_ent_num
 
+        self.alpha = args.alpha
         self.beta = args.beta
 
         args.add_pooling_layer = False
         config = args.model_config
+        config.backbone_model_type = args.backbone_model_type
+
         self.config = config
 
         self.kformers = KFormersModel(config, config_k, backbone_knowledge_dict)
@@ -274,6 +308,98 @@ class KFormersForRelationClassification(nn.Module):
         self.dropout = nn.Dropout(config.hidden_dropout_prob)
         self.classifier = nn.Linear(args.model_config.hidden_size * 2, self.num_labels, False)
 
+        self.aug_pl_fc = nn.Linear(config.hidden_size, 1)
+        self.loss = nn.CrossEntropyLoss(reduction='sum')
+
+        self.apply(self.init_weights)
+
+    def init_weights(self, module: nn.Module):
+        if isinstance(module, nn.Linear):
+            module.weight.data.normal_(mean=0.0, std=self.config.initializer_range)
+        elif isinstance(module, nn.Embedding):
+            if module.embedding_dim == 1:  # embedding for bias parameters
+                module.weight.data.zero_()
+            else:
+                module.weight.data.normal_(mean=0.0, std=self.config.initializer_range)
+        elif isinstance(module, nn.LayerNorm):
+            module.bias.data.zero_()
+            module.weight.data.fill_(1.0)
+        if isinstance(module, nn.Linear) and module.bias is not None:
+            module.bias.data.zero_()
+
+    def forward(self, input_ids=None, attention_mask=None, token_type_ids=None, start_id=None,
+                entity_ids=None, entity_attention_mask=None, entity_segment_ids=None, entity_position_ids=None,
+                k_ent_ids=None, k_label=None,
+                k_des_ids=None, k_des_mask_one=None,  k_des_seg=None, k_des_mask=None, labels=None):
+
+
+        outputs = self.kformers(input_ids=input_ids, attention_mask=attention_mask, token_type_ids=token_type_ids, start_id=start_id,
+                entity_ids=entity_ids, entity_attention_mask=entity_attention_mask, entity_segment_ids=entity_segment_ids, entity_position_ids=entity_position_ids,
+                k_ent_ids=k_ent_ids, k_label=k_label,
+                k_des_ids=k_des_ids, k_des_mask_one=k_des_mask_one,  k_des_seg=k_des_seg, k_des_mask=k_des_mask, )
+
+        original_text_output, pooled_output, entity_output, k_entity_embeddings, k_ent_output, mapped_k_des_output = outputs  # batch L d
+        sequence_output = self.dropout(original_text_output)
+        k_ent_output = self.dropout(k_ent_output)
+
+        # main loss
+        if entity_output:  # for luke
+            entity_vec = torch.cat([entity_output[:, 0, :], entity_output[:, 1, :]], dim=1)
+            entity_vec = self.dropout(entity_vec)
+        else:
+            sub_start_id, obj_start_id = start_id.split(1, dim=1)  # split to 2, each is 1
+            sub_start_id = sub_start_id
+            subj_output = torch.bmm(sub_start_id, sequence_output)
+
+            obj_start_id = obj_start_id
+            obj_output = torch.bmm(obj_start_id, sequence_output)
+            entity_vec = torch.cat([subj_output.squeeze(1), obj_output.squeeze(1)], dim=1)
+        logits = self.classifier(entity_vec)
+
+        if labels is None:
+            return logits
+        else:
+            main_loss = self.loss(logits, labels)
+
+            # 第二个辅助loss：区分污染和增强
+            sub_start_id, obj_start_id = start_id.split(1, dim=1)  # split to 2, each is 1
+            sub_start_id = sub_start_id
+            subj_output = torch.bmm(sub_start_id, sequence_output)
+
+            obj_start_id = obj_start_id
+            obj_output = torch.bmm(obj_start_id, sequence_output)
+            anchor_vec = torch.cat([subj_output, obj_output], dim=1)
+            anchor_vec = torch.mean(anchor_vec, dim=1, keepdim=True) # batch 1 d
+            aug_pl_logits = self.aug_pl_fc(k_ent_output + anchor_vec)  # batch K d -> batch K/batch K C
+            aug_pl_loss = self.loss(aug_pl_logits.view(input_ids.size(0), -1), k_label.view(-1))
+
+            return logits, main_loss + self.beta * aug_pl_loss
+
+
+
+class KFormersForSequenceClassification(nn.Module):
+    def __init__(self, args, config_k, backbone_knowledge_dict):
+        super(KFormersForSequenceClassification, self).__init__()
+        self.num_labels = args.num_labels
+        self.ent_num = args.max_ent_num
+
+        self.alpha = args.alpha
+        self.beta = args.beta
+
+        args.add_pooling_layer = False
+        config = args.model_config
+        config.backbone_model_type = args.backbone_model_type
+
+        self.config = config
+
+        self.kformers = KFormersModel(config, config_k, backbone_knowledge_dict)
+
+        self.dropout = nn.Dropout(config.hidden_dropout_prob)
+        # self.classifier = nn.Linear(config.hidden_size, self.num_labels)
+        self.classifier_2 = nn.Linear(config.hidden_size, self.num_labels)
+
+        self.classifier = RobertaClassificationHead(config)
+        self.loss = nn.CrossEntropyLoss(reduction='sum')
         self.aug_pl_fc = nn.Linear(config.hidden_size, 1)
 
         self.apply(self.init_weights)
@@ -305,28 +431,78 @@ class KFormersForRelationClassification(nn.Module):
 
         original_text_output, pooled_output, entity_output, k_entity_embeddings, k_ent_output, mapped_k_des_output = outputs  # batch L d
 
-
-        # 主loss
-        feature_vector = torch.cat([entity_output[:, 0, :], entity_output[:, 1, :]], dim=1)
-        feature_vector = self.dropout(feature_vector)
-        logits = self.classifier(feature_vector)
-
-        # 第一个辅助loss：ent增强&des增强
-        sub_start_id, obj_start_id = start_id.split(1, dim=1)  # split to 2, each is 1
-        subj_output = torch.bmm(sub_start_id, original_text_output)
-        obj_output = torch.bmm(obj_start_id, original_text_output)
-        anchor_vec = torch.cat([subj_output, obj_output], dim=1) # batch 2 d
-
+        # main loss
+        if entity_output:  # for luke
+            logits = self.classifier(entity_output)
+        else:
+            logits = self.classifier(original_text_output)
 
         if labels is None:
             return logits
         else:
-            main_loss = F.cross_entropy(logits, labels)
+            main_loss = self.loss(logits.view(-1, self.num_labels), labels.view(-1))
 
             # 第二个辅助loss：区分污染和增强
-            anchor_vec = torch.mean(anchor_vec, dim=1, keepdim=True) # batch 1 d
-            aug_pl_logits = self.aug_pl_fc(k_ent_output + anchor_vec)  # batch K d -> batch K/batch K C
-            aug_pl_loss = F.cross_entropy(aug_pl_logits.view(input_ids.size(0), -1), k_label.view(-1))
+            cls_vec = original_text_output[:, 0, :]  # batch d
+            aug_pl_logits = self.aug_pl_fc(k_ent_output + cls_vec.unsqueeze(1))  # batch K d -> batch K/batch K C
+
+            aug_pl_loss = nn.CrossEntropyLoss()(aug_pl_logits.view(input_ids.size(0), -1), k_label.view(-1))
 
             return logits, main_loss + self.beta * aug_pl_loss
 
+
+
+class KFormersForSequencePairClassification(nn.Module):
+    def __init__(self, args, config_k, backbone_knowledge_dict):
+        super(KFormersForSequencePairClassification, self).__init__()
+        self.num_labels = args.num_labels
+        self.ent_num = args.max_ent_num
+
+        args.add_pooling_layer = False
+        config = args.model_config
+        self.config = config
+
+        self.kformers = KFormersModel(config, config_k, backbone_knowledge_dict)
+
+        self.dropout = nn.Dropout(config.hidden_dropout_prob)
+        self.classifier = nn.Linear(config.hidden_size, self.num_labels)
+
+        self.apply(self.init_weights)
+
+    def init_weights(self, module: nn.Module):
+        if isinstance(module, nn.Linear):
+            module.weight.data.normal_(mean=0.0, std=self.config.initializer_range)
+        elif isinstance(module, nn.Embedding):
+            if module.embedding_dim == 1:  # embedding for bias parameters
+                module.weight.data.zero_()
+            else:
+                module.weight.data.normal_(mean=0.0, std=self.config.initializer_range)
+        elif isinstance(module, nn.LayerNorm):
+            module.bias.data.zero_()
+            module.weight.data.fill_(1.0)
+        if isinstance(module, nn.Linear) and module.bias is not None:
+            module.bias.data.zero_()
+
+    def forward(self, input_ids=None, attention_mask=None, token_type_ids=None, start_id=None,
+                entity_ids=None, entity_attention_mask=None, entity_segment_ids=None, entity_position_ids=None,
+                k_ent_ids=None, k_label=None,
+                k_des_ids=None, k_des_mask_one=None,  k_des_seg=None, k_des_mask=None, labels=None):
+
+
+        outputs = self.kformers(input_ids=input_ids, attention_mask=attention_mask, token_type_ids=token_type_ids, start_id=start_id,
+                entity_ids=entity_ids, entity_attention_mask=entity_attention_mask, entity_segment_ids=entity_segment_ids, entity_position_ids=entity_position_ids,
+                k_ent_ids=k_ent_ids, k_label=k_label,
+                k_des_ids=k_des_ids, k_des_mask_one=k_des_mask_one,  k_des_seg=k_des_seg, k_des_mask=k_des_mask, )
+
+        original_text_output, pooled_output, entity_output, k_entity_embeddings, k_ent_output, mapped_k_des_output = outputs  # batch L d
+
+        # 主loss
+        feature_vector = self.dropout(original_text_output[:, 0, :] )
+        logits = self.classifier(feature_vector)
+
+        if labels is None:
+            return logits
+        else:
+            main_loss = F.cross_entropy(logits.view(-1, self.num_labels), labels.view(-1))
+
+            return logits, main_loss

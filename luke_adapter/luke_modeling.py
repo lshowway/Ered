@@ -17,7 +17,6 @@ from transformers.models.bert.modeling_bert import (
     BertOutput,
     BertPooler,
     BertSelfOutput,
-    BertAttention
 )
 from transformers.models.roberta.modeling_roberta import RobertaEmbeddings
 
@@ -39,121 +38,6 @@ class LukeConfig(BertConfig):
             self.entity_emb_size = self.hidden_size
         else:
             self.entity_emb_size = entity_emb_size
-
-
-
-class LukeModel(nn.Module):
-    def __init__(self, config: LukeConfig):
-        super(LukeModel, self).__init__()
-
-        self.config = config
-
-        self.encoder = BertEncoder(config)  # 这个的作用是什么？
-        self.pooler = BertPooler(config)
-
-        self.embeddings = RobertaEmbeddings(config)
-        self.embeddings.token_type_embeddings.requires_grad = False  # why?
-
-        # self.entity_embeddings = EntityEmbeddings(config)
-
-    def forward(
-            self,
-            word_ids: torch.LongTensor,
-            word_segment_ids: torch.LongTensor,
-            word_attention_mask: torch.LongTensor,
-            entity_ids: torch.LongTensor = None,
-            entity_position_ids: torch.LongTensor = None,
-            entity_segment_ids: torch.LongTensor = None,
-            entity_attention_mask: torch.LongTensor = None,
-    ):
-        word_seq_size = word_ids.size(1)
-
-        embedding_output = self.embeddings(word_ids, word_segment_ids)
-
-        attention_mask = self._compute_extended_attention_mask(word_attention_mask, entity_attention_mask)
-        if entity_ids is not None:
-            entity_embedding_output = self.entity_embeddings(entity_ids, entity_position_ids, entity_segment_ids)
-            embedding_output = torch.cat([embedding_output, entity_embedding_output], dim=1)
-
-        encoder_outputs = self.encoder(embedding_output, attention_mask, [None] * self.config.num_hidden_layers)
-        sequence_output = encoder_outputs[0]
-        word_sequence_output = sequence_output[:, :word_seq_size, :]
-        pooled_output = self.pooler(sequence_output)
-
-        if entity_ids is not None:
-            entity_sequence_output = sequence_output[:, word_seq_size:, :]
-            return (word_sequence_output, entity_sequence_output, pooled_output,) + encoder_outputs[1:]
-        else:
-            return (word_sequence_output, pooled_output,) + encoder_outputs[1:]
-
-    def init_weights(self, module: nn.Module):
-        if isinstance(module, nn.Linear):
-            module.weight.data.normal_(mean=0.0, std=self.config.initializer_range)
-        elif isinstance(module, nn.Embedding):
-            if module.embedding_dim == 1:  # embedding for bias parameters
-                module.weight.data.zero_()
-            else:
-                module.weight.data.normal_(mean=0.0, std=self.config.initializer_range)
-        elif isinstance(module, nn.LayerNorm):
-            module.bias.data.zero_()
-            module.weight.data.fill_(1.0)
-        if isinstance(module, nn.Linear) and module.bias is not None:
-            module.bias.data.zero_()
-
-    def load_bert_weights(self, state_dict: Dict[str, torch.Tensor]):
-        state_dict = state_dict.copy()
-        for key in list(state_dict.keys()):
-            new_key = key.replace("gamma", "weight").replace("beta", "bias")
-            if new_key.startswith("roberta."):
-                new_key = new_key[8:]
-            elif new_key.startswith("bert."):
-                new_key = new_key[5:]
-
-            if key != new_key:
-                state_dict[new_key] = state_dict[key]
-                del state_dict[key]
-
-        missing_keys = []
-        unexpected_keys = []
-        error_msgs = []
-
-        metadata = getattr(state_dict, "_metadata", None)
-        state_dict = state_dict.copy()
-        if metadata is not None:
-            state_dict._metadata = metadata
-
-        def load(module, prefix=""):
-            local_metadata = {} if metadata is None else metadata.get(prefix[:-1], {})
-            module._load_from_state_dict(
-                state_dict, prefix, local_metadata, True, missing_keys, unexpected_keys, error_msgs
-            )
-            for name, child in module._modules.items():
-                if child is not None:
-                    load(child, prefix + name + ".")
-
-        load(self, prefix="")
-        if len(unexpected_keys) > 0:
-            logger.info(
-                "Weights from pretrained model not used in {}: {}".format(
-                    self.__class__.__name__, sorted(unexpected_keys)
-                )
-            )
-        if len(error_msgs) > 0:
-            raise RuntimeError(
-                "Error(s) in loading state_dict for {}:\n\t{}".format(self.__class__.__name__, "\n\t".join(error_msgs))
-            )
-
-    def _compute_extended_attention_mask(
-            self, word_attention_mask: torch.LongTensor, entity_attention_mask: torch.LongTensor
-    ):
-        attention_mask = word_attention_mask
-        if entity_attention_mask is not None:
-            attention_mask = torch.cat([attention_mask, entity_attention_mask], dim=1)
-        extended_attention_mask = attention_mask.unsqueeze(1).unsqueeze(2)
-        extended_attention_mask = extended_attention_mask.to(dtype=next(self.parameters()).dtype)
-        extended_attention_mask = (1.0 - extended_attention_mask) * -10000.0
-
-        return extended_attention_mask
 
 
 
@@ -218,7 +102,8 @@ class EntityAwareSelfAttention(nn.Module):
         entity_attention_scores = torch.cat([e2w_attention_scores, e2e_attention_scores], dim=3)  # 2, 12, 2, 41
         attention_scores = torch.cat([word_attention_scores, entity_attention_scores], dim=2)  # 2, 12, 41, 41
 
-        attention_scores = attention_scores / math.sqrt(self.attention_head_size) + attention_mask
+        attention_scores = attention_scores / math.sqrt(self.attention_head_size)
+        attention_scores = attention_scores + attention_mask
 
         attention_probs = F.softmax(attention_scores, dim=-1)
         attention_probs = self.dropout(attention_probs)  # 2, 12, 41, 41
@@ -244,19 +129,15 @@ class EntityAwareLayer(nn.Module):
         self.intermediate = BertIntermediate(config)
         self.output = BertOutput(config)
 
-    def forward(self, word_hidden_states, word_attention_mask, entity_hidden_states, entity_attention_mask):
-
-        attention_mask = torch.cat([word_attention_mask, entity_attention_mask], dim=-1)
-        attention_mask = attention_mask[:, None, None, :]
-
+    def forward(self, word_hidden_states, entity_hidden_states, attention_mask):
         word_attention_output, entity_attention_output = self.attention(
-                                        word_hidden_states, entity_hidden_states, attention_mask
-                                        )
+            word_hidden_states, entity_hidden_states, attention_mask
+        )
         attention_output = torch.cat([word_attention_output, entity_attention_output], dim=1)  # 2, 62, 768
         intermediate_output = self.intermediate(attention_output)  # 2, 62, 3072
         layer_output = self.output(intermediate_output, attention_output)  # 2, 62, 768
 
-        return (layer_output[:, : word_hidden_states.size(1), :], layer_output[:, word_hidden_states.size(1):, :])
+        return layer_output[:, : word_hidden_states.size(1), :], layer_output[:, word_hidden_states.size(1):, :]
 
 
 
@@ -266,19 +147,34 @@ class EntityAwareEncoder(nn.Module):
         self.layer = nn.ModuleList([EntityAwareLayer(config) for _ in range(config.num_hidden_layers)])
 
     def forward(self, word_hidden_states, entity_hidden_states, attention_mask):
+        all_word_states, all_entity_states = (), ()
         for layer_module in self.layer:
             word_hidden_states, entity_hidden_states = layer_module(
                 word_hidden_states, entity_hidden_states, attention_mask
             )
-        return word_hidden_states, entity_hidden_states
+            all_word_states += (word_hidden_states, )
+            all_entity_states += (entity_hidden_states, )
+        # return word_hidden_states, entity_hidden_states
+        return all_word_states, all_entity_states
 
 
 
-class LukeEntityAwareAttentionModel(LukeModel):
+class LukeEntityAwareAttentionModel(nn.Module):
     def __init__(self, config):
-        super(LukeEntityAwareAttentionModel, self).__init__(config)
+        super(LukeEntityAwareAttentionModel, self).__init__()
+
+        self.encoder = BertEncoder(config) # 这个不能注释，会drop很多，why？？？？？参数量没增加，后面也重写了啊。
+
         self.config = config
         self.encoder = EntityAwareEncoder(config)
+
+        self.pooler = BertPooler(config)
+
+        self.embeddings = RobertaEmbeddings(config)
+        self.embeddings.token_type_embeddings.requires_grad = False  # why?
+        self.entity_embeddings = EntityEmbeddings(config)
+
+        self.apply(self.init_weights)
 
     def forward(
             self,
@@ -318,9 +214,37 @@ class LukeEntityAwareAttentionModel(LukeModel):
         super(LukeEntityAwareAttentionModel, self).load_state_dict(new_state_dict, *args, **kwargs)
 
 
+    def init_weights(self, module: nn.Module):
+        if isinstance(module, nn.Linear):
+            module.weight.data.normal_(mean=0.0, std=self.config.initializer_range)
+        elif isinstance(module, nn.Embedding):
+            if module.embedding_dim == 1:  # embedding for bias parameters
+                module.weight.data.zero_()
+            else:
+                module.weight.data.normal_(mean=0.0, std=self.config.initializer_range)
+        elif isinstance(module, nn.LayerNorm):
+            module.bias.data.zero_()
+            module.weight.data.fill_(1.0)
+        if isinstance(module, nn.Linear) and module.bias is not None:
+            module.bias.data.zero_()
+
+    def _compute_extended_attention_mask(
+            self, word_attention_mask: torch.LongTensor, entity_attention_mask: torch.LongTensor
+    ):
+        attention_mask = word_attention_mask
+        if entity_attention_mask is not None:
+            attention_mask = torch.cat([attention_mask, entity_attention_mask], dim=1)
+        extended_attention_mask = attention_mask.unsqueeze(1).unsqueeze(2)
+        extended_attention_mask = extended_attention_mask.to(dtype=next(self.parameters()).dtype)
+        extended_attention_mask = (1.0 - extended_attention_mask) * -10000.0
+
+        return extended_attention_mask
+
+
+
 
 class EntityEmbeddings(nn.Module):
-    def __init__(self, config):
+    def __init__(self, config: LukeConfig):
         super(EntityEmbeddings, self).__init__()
         self.config = config
 
@@ -328,13 +252,15 @@ class EntityEmbeddings(nn.Module):
         if config.entity_emb_size != config.hidden_size:
             self.entity_embedding_dense = nn.Linear(config.entity_emb_size, config.hidden_size, bias=False)
 
-        self.position_embeddings = nn.Embedding(config.max_position_embeddings, config.hidden_size, padding_idx=-1)  # 514*768
+        self.position_embeddings = nn.Embedding(config.max_position_embeddings, config.hidden_size)  # 514*768
         self.token_type_embeddings = nn.Embedding(config.type_vocab_size, config.hidden_size)  # 1*768
 
         self.LayerNorm = nn.LayerNorm(config.hidden_size, eps=config.layer_norm_eps)
         self.dropout = nn.Dropout(config.hidden_dropout_prob)
 
-    def forward(self, entity_ids, position_ids, token_type_ids=None):
+    def forward(
+            self, entity_ids: torch.LongTensor, position_ids: torch.LongTensor, token_type_ids: torch.LongTensor = None
+    ):
         if token_type_ids is None:
             token_type_ids = torch.zeros_like(entity_ids)
 
@@ -358,37 +284,6 @@ class EntityEmbeddings(nn.Module):
 
 
 
-class KnowledgeEntityEmbeddings(nn.Module):
-    def __init__(self, config):
-        super(KnowledgeEntityEmbeddings, self).__init__()
-        self.config = config
-
-        self.entity_embeddings = nn.Embedding(config.k_entity_vocab_size, config.entity_emb_size, padding_idx=0)  # 2*256
-
-        for k, v in self.entity_embeddings.named_parameters():
-            v.requires_grad = False
-
-        if config.entity_emb_size != config.hidden_size:
-            self.entity_embedding_dense = nn.Linear(config.entity_emb_size, config.hidden_size, bias=False)
-
-        self.LayerNorm = nn.LayerNorm(config.hidden_size, eps=config.layer_norm_eps)
-        self.dropout = nn.Dropout(config.hidden_dropout_prob)
-
-    def forward(self, entity_ids, position_ids=None, token_type_ids=None):
-        k_entity_embeddings = self.entity_embeddings(entity_ids)
-        if self.config.entity_emb_size != self.config.hidden_size:
-            k_entity_embeddings = self.entity_embedding_dense(k_entity_embeddings)
-
-        embeddings = k_entity_embeddings
-        embeddings = self.LayerNorm(embeddings)
-        embeddings = self.dropout(embeddings)
-
-        return embeddings
-
-
-
-
-
 class LukeForEntityTyping(LukeEntityAwareAttentionModel):
     def __init__(self, args, num_labels):
         super(LukeForEntityTyping, self).__init__(args.model_config)
@@ -397,7 +292,16 @@ class LukeForEntityTyping(LukeEntityAwareAttentionModel):
         self.dropout = nn.Dropout(args.model_config.hidden_dropout_prob)
         self.typing = nn.Linear(args.model_config.hidden_size, num_labels)
 
-        self.apply(self.init_weights)
+        self.adapter = AdapterModel(args)
+
+        self.task_dense = nn.Linear(args.model_config.hidden_size * 3, args.model_config.hidden_size)
+
+
+        self.fac_adapter = load_pretrained_adapter(self.adapter, "/home/LAB/zhaoqh/phd4hh/K-Adapter-main/checkpoints/fac-adapter/pytorch_model.bin")
+        self.lin_adapter = load_pretrained_adapter(self.adapter, "/home/LAB/zhaoqh/phd4hh/K-Adapter-main/checkpoints/lin-adapter/pytorch_model.bin")
+        # self.fac_adapter = load_pretrained_adapter(self.adapter, "G:\D\MSRA\K-Adapter-main\checkpoints/fac-adapter/pytorch_model.bin")
+        # self.lin_adapter = load_pretrained_adapter(self.adapter, "G:\D\MSRA\K-Adapter-main\checkpoints/fac-adapter/pytorch_model.bin")
+
 
     def forward(
         self,
@@ -420,8 +324,16 @@ class LukeForEntityTyping(LukeEntityAwareAttentionModel):
             entity_attention_mask,
         )  # 第一个是input的：2, 43, 768   第二个是entity identifier的： 2, 2, 768
         # 为啥取第0个啊？就2个啊。因为这是一个entity typing问题，就是对entity分类
-        feature_vector = encoder_outputs[1][:, 0, :]  # 2*768
-        feature_vector = self.dropout(feature_vector)
+
+        t1 = encoder_outputs[1] # entity all
+        combine_features = t1[-1][:, 0, :]
+
+        t2 = self.fac_adapter(t1)
+        t3 = self.lin_adapter(t1)
+
+        task_features = self.task_dense(torch.cat([combine_features, t2[:, 0, :], t3[:, 0, :]], dim=1))
+
+        feature_vector = self.dropout(task_features)
         logits = self.typing(feature_vector)
         if labels is None:
             return logits
@@ -430,4 +342,135 @@ class LukeForEntityTyping(LukeEntityAwareAttentionModel):
         # binary cross-entropy loss averaged over all entity
         # types.
         return (F.binary_cross_entropy_with_logits(logits.view(-1), labels.view(-1).type_as(logits)),)
+
+
+
+def load_pretrained_adapter(adapter, adapter_path):
+    new_adapter = adapter
+    model_dict = new_adapter.state_dict()
+
+    adapter_meta_dict = torch.load(adapter_path, map_location='cpu')
+    changed_adapter_meta = {}
+    for key, v in adapter_meta_dict.items():
+        if key in model_dict:
+            # print(v.tolist())
+            changed_adapter_meta[key] = v
+
+    model_dict.update(changed_adapter_meta)
+    new_adapter.load_state_dict(model_dict)
+    return new_adapter
+
+
+
+class AdapterModel(nn.Module):
+    def __init__(self, args):
+        super(AdapterModel, self).__init__()
+        # self.config = pretrained_model_config
+        self.args = args
+        self.adapter_size = 768 # args.adapter_size
+
+        class AdapterConfig:
+            project_hidden_size: int = 1024 # self.config.hidden_size
+            hidden_act: str = "gelu"
+            adapter_size: int = self.adapter_size  # 64
+            adapter_initializer_range: float = 0.0002
+            is_decoder: bool = False
+            attention_probs_dropout_prob: float = 0.1
+            hidden_dropout_prob: float = 0.1
+            hidden_size: int = 768
+            initializer_range: float = 0.02
+            intermediate_size: int = 3072
+            layer_norm_eps: float = 1e-05
+            max_position_embeddings: int = 514
+            num_attention_heads: int = 12
+            num_hidden_layers: int = 2 # self.args.adapter_transformer_layers
+            num_labels: int = 2
+            output_attentions: bool = False
+            output_hidden_states: bool = False
+            torchscript: bool = False
+            type_vocab_size: int = 1
+            vocab_size: int = 50265
+        self.adapter_config = AdapterConfig
+        self.adapter_skip_layers = 0 # self.args.adapter_skip_layers
+        self.adapter_list = [0,11,22] # args.adapter_list
+        self.adapter_num = len(self.adapter_list)
+        self.adapter = nn.ModuleList([Adapter(args, AdapterConfig) for _ in range(self.adapter_num)])
+
+        for p in self.adapter.parameters():
+            p.requires_grad = False
+
+    def forward(self, hidden_states):
+        t1 = hidden_states[0]
+        hidden_states_last = torch.zeros(t1.size()).to(t1.device)
+
+        adapter_hidden_states = []
+        adapter_hidden_states_count = 0
+        for i, adapter_module in enumerate(self.adapter):
+            fusion_state = hidden_states[self.adapter_list[i]] + hidden_states_last
+            hidden_states_last = adapter_module(fusion_state)
+            adapter_hidden_states.append(hidden_states_last)
+            adapter_hidden_states_count += 1
+            if self.adapter_skip_layers >= 1:
+                if adapter_hidden_states_count % self.adapter_skip_layers == 0:
+                    hidden_states_last = hidden_states_last + adapter_hidden_states[
+                        int(adapter_hidden_states_count / self.adapter_skip_layers)]
+
+
+        return hidden_states_last  # (loss), logits, (hidden_states), (attentions)
+
+
+
+class Adapter(nn.Module):
+    def __init__(self, args, adapter_config):
+        super(Adapter, self).__init__()
+        self.adapter_config = adapter_config
+        self.args = args
+        self.down_project = nn.Linear(
+            self.adapter_config.project_hidden_size,
+            self.adapter_config.adapter_size,
+        )
+
+        import pytorch_transformers
+
+        self.encoder = pytorch_transformers.modeling_bert.BertEncoder(self.adapter_config)
+        self.up_project = nn.Linear(self.adapter_config.adapter_size, adapter_config.project_hidden_size)
+
+    def forward(self, hidden_states):
+        down_projected = self.down_project(hidden_states)
+        batch, num, d = down_projected.size()
+        # attention_mask = torch.ones(input_shape, device=down_projected.device, dtype=down_projected.dtype)
+        extended_attention_mask = torch.ones(batch, 1, 1, num, device=down_projected.device, dtype=down_projected.dtype)
+        # if attention_mask.dim() == 3:
+        #     extended_attention_mask = attention_mask[:, None, :, :]
+        # if attention_mask.dim() == 2:
+        #     extended_attention_mask = attention_mask[:, None, None, :]
+        # extended_attention_mask = extended_attention_mask.to(dtype=next(self.parameters()).dtype)  # fp16 compatibility
+        extended_attention_mask = (1.0 - extended_attention_mask) * -10000.0
+
+        # if encoder_attention_mask.dim() == 3:
+        #     encoder_extended_attention_mask = encoder_attention_mask[:, None, :, :]
+        # if encoder_attention_mask.dim() == 2:
+        #     encoder_extended_attention_mask = encoder_attention_mask[:, None, None, :]
+        head_mask = [None] * self.adapter_config.num_hidden_layers
+        # print(hidden_states.dtype, down_projected.dtype, extended_attention_mask.dtype)
+        encoder_outputs = self.encoder(down_projected,
+                                       attention_mask=extended_attention_mask,
+                                       head_mask=head_mask)
+        up_projected = self.up_project(encoder_outputs[0])
+        return hidden_states + up_projected
+
+    def init_weights(self):
+        for m in self.modules():
+            if isinstance(m, nn.Linear):
+                m.weight.data.uniform_(-self.adapter_config.initializer_range, self.adapter_config.initializer_range)
+                if not m.bias is None:
+                    m.bias.data.zero_()
+            elif isinstance(m, nn.Embedding):
+                m.weight.data.uniform_(-self.adapter_config.initializer_range, self.adapter_config.initializer_range)
+
+
+
+
+
+
 

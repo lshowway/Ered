@@ -1,33 +1,6 @@
 import numpy as np
-from sklearn.metrics import precision_recall_curve, auc, roc_curve, accuracy_score, matthews_corrcoef, f1_score
 
 
-def quality_control_metric(preds, labels, positive_label=1):
-    def _auc(preds, labels):
-        y = np.array(labels)
-        preds = np.array(preds)
-        preds = preds[:, positive_label]  # 1 is positive label
-        fpr, tpr, thresholds = roc_curve(y, preds, pos_label=1)
-        precision, recall, _thresholds = precision_recall_curve(y, preds)
-        roc_auc = auc(fpr, tpr)
-        pr_auc = auc(recall, precision)
-        return {
-            "roc_auc": round(roc_auc, 4),
-            "pr_auc": round(pr_auc, 4)
-        }
-
-    def accuracy(preds, labels):
-        outputs = np.argmax(preds, axis=1)
-        acc = np.sum(outputs == labels) / len(labels)
-        return {"accuracy": round(acc, 4)}
-
-    t1 = _auc(preds, labels)
-    t2 = accuracy(preds, labels)
-    t1.update(t2)
-    return t1
-
-
-# # ======================================
 def simple_accuracy(preds, labels):
     preds = np.argmax(preds, axis=-1)
     acc = (preds == labels).mean()
@@ -171,14 +144,11 @@ def compute_metrics(task_name, preds, labels):
     if task_name == "sst2":
         t1 = simple_accuracy(preds, labels)
         return t1
-    elif task_name == 'eem':
-        return quality_control_metric(preds, labels)
     elif task_name == 'openentity':
         return openentity_metric(preds, labels)
     elif task_name == 'figer':
         return figer_metric(preds, labels)
     elif task_name == 'tacred':
-        from data_utils import TACRED_relations
         NO_RELATION = 0 # 0 is No_relation
         label_set = list(range(42))
         label_set.remove(NO_RELATION)
