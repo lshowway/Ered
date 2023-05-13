@@ -24,6 +24,9 @@ from transformers.models.roberta.modeling_roberta import RobertaEmbeddings
 logger = logging.getLogger(__name__)
 
 
+
+
+
 class LukeConfig(BertConfig):
     def __init__(
             self, vocab_size: int, entity_vocab_size: int, bert_model_name: str, entity_emb_size: int = None, **kwargs
@@ -36,6 +39,7 @@ class LukeConfig(BertConfig):
             self.entity_emb_size = self.hidden_size
         else:
             self.entity_emb_size = entity_emb_size
+
 
 
 class LukeModel(nn.Module):
@@ -152,6 +156,7 @@ class LukeModel(nn.Module):
         return extended_attention_mask
 
 
+
 class EntityAwareAttention(nn.Module):
     def __init__(self, config):
         super(EntityAwareAttention, self).__init__()
@@ -164,6 +169,7 @@ class EntityAwareAttention(nn.Module):
         self_output = torch.cat([word_self_output, entity_self_output], dim=1)
         output = self.output(self_output, hidden_states)  # y是原封不动2, 62, 768
         return output[:, : word_hidden_states.size(1), :], output[:, word_hidden_states.size(1):, :]
+
 
 
 class EntityAwareSelfAttention(nn.Module):
@@ -229,6 +235,7 @@ class EntityAwareSelfAttention(nn.Module):
         return context_layer[:, :word_size, :], context_layer[:, word_size:, :]  # 2, 39, 768   2, 2, 768
 
 
+
 class EntityAwareLayer(nn.Module):
     def __init__(self, config):
         super(EntityAwareLayer, self).__init__()
@@ -238,17 +245,19 @@ class EntityAwareLayer(nn.Module):
         self.output = BertOutput(config)
 
     def forward(self, word_hidden_states, word_attention_mask, entity_hidden_states, entity_attention_mask):
+
         attention_mask = torch.cat([word_attention_mask, entity_attention_mask], dim=-1)
         attention_mask = attention_mask[:, None, None, :]
 
         word_attention_output, entity_attention_output = self.attention(
-            word_hidden_states, entity_hidden_states, attention_mask
-        )
+                                        word_hidden_states, entity_hidden_states, attention_mask
+                                        )
         attention_output = torch.cat([word_attention_output, entity_attention_output], dim=1)  # 2, 62, 768
         intermediate_output = self.intermediate(attention_output)  # 2, 62, 3072
         layer_output = self.output(intermediate_output, attention_output)  # 2, 62, 768
 
         return (layer_output[:, : word_hidden_states.size(1), :], layer_output[:, word_hidden_states.size(1):, :])
+
 
 
 class EntityAwareEncoder(nn.Module):
@@ -262,6 +271,7 @@ class EntityAwareEncoder(nn.Module):
                 word_hidden_states, entity_hidden_states, attention_mask
             )
         return word_hidden_states, entity_hidden_states
+
 
 
 class LukeEntityAwareAttentionModel(LukeModel):
@@ -308,6 +318,7 @@ class LukeEntityAwareAttentionModel(LukeModel):
         super(LukeEntityAwareAttentionModel, self).load_state_dict(new_state_dict, *args, **kwargs)
 
 
+
 class EntityEmbeddings(nn.Module):
     def __init__(self, config):
         super(EntityEmbeddings, self).__init__()
@@ -317,8 +328,7 @@ class EntityEmbeddings(nn.Module):
         if config.entity_emb_size != config.hidden_size:
             self.entity_embedding_dense = nn.Linear(config.entity_emb_size, config.hidden_size, bias=False)
 
-        self.position_embeddings = nn.Embedding(config.max_position_embeddings, config.hidden_size,
-                                                padding_idx=-1)  # 514*768
+        self.position_embeddings = nn.Embedding(config.max_position_embeddings, config.hidden_size, padding_idx=-1)  # 514*768
         self.token_type_embeddings = nn.Embedding(config.type_vocab_size, config.hidden_size)  # 1*768
 
         self.LayerNorm = nn.LayerNorm(config.hidden_size, eps=config.layer_norm_eps)
@@ -347,13 +357,13 @@ class EntityEmbeddings(nn.Module):
         return embeddings
 
 
+
 class KnowledgeEntityEmbeddings(nn.Module):
     def __init__(self, config):
         super(KnowledgeEntityEmbeddings, self).__init__()
         self.config = config
 
-        self.entity_embeddings = nn.Embedding(config.k_entity_vocab_size, config.entity_emb_size,
-                                              padding_idx=0)  # 2*256
+        self.entity_embeddings = nn.Embedding(config.k_entity_vocab_size, config.entity_emb_size, padding_idx=0)  # 2*256
 
         for k, v in self.entity_embeddings.named_parameters():
             v.requires_grad = False
@@ -376,6 +386,9 @@ class KnowledgeEntityEmbeddings(nn.Module):
         return embeddings
 
 
+
+
+
 class LukeForEntityTyping(LukeEntityAwareAttentionModel):
     def __init__(self, args, num_labels):
         super(LukeForEntityTyping, self).__init__(args.model_config)
@@ -387,15 +400,15 @@ class LukeForEntityTyping(LukeEntityAwareAttentionModel):
         self.apply(self.init_weights)
 
     def forward(
-            self,
-            word_ids,
-            word_segment_ids,
-            word_attention_mask,
-            entity_ids,
-            entity_position_ids,
-            entity_segment_ids,
-            entity_attention_mask,
-            labels=None,
+        self,
+        word_ids,
+        word_segment_ids,
+        word_attention_mask,
+        entity_ids,
+        entity_position_ids,
+        entity_segment_ids,
+        entity_attention_mask,
+        labels=None,
     ):
         encoder_outputs = super(LukeForEntityTyping, self).forward(
             word_ids,
@@ -417,3 +430,4 @@ class LukeForEntityTyping(LukeEntityAwareAttentionModel):
         # binary cross-entropy loss averaged over all entity
         # types.
         return (F.binary_cross_entropy_with_logits(logits.view(-1), labels.view(-1).type_as(logits)),)
+

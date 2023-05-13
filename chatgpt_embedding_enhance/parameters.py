@@ -1,5 +1,5 @@
 import argparse
-import utils
+import util
 import logging
 
 
@@ -47,18 +47,25 @@ def parse_args():
     t = dict(zip(range(24), range(24)))
     # parser.add_argument("--backbone_knowledge_dict", default={0: 0, 5: 1, 8: 2, 9: 3, 10: 4, 22: 5}, type=dict)
     parser.add_argument("--backbone_knowledge_dict", default='{18: 0, 19: 1, 20: 2, 21: 3, 22: 4, 23: 5}', type=str)
-    parser.add_argument("--add_knowledge", type=utils.str2bool, default=True)
+    parser.add_argument("--add_knowledge", type=util.str2bool, default=True)
 
     parser.add_argument("--learning_rate", type=float, default=1e-5)
     parser.add_argument("--max_grad_norm", default=1.0, type=float, help="Max gradient norm.")
 
     parser.add_argument("--local_rank", type=int, default=-1, help="For distributed training: local_rank")
-    parser.add_argument("--fp16", type=utils.str2bool, default=False)
-    parser.add_argument("--update_K_module", type=utils.str2bool, default=False)
+    parser.add_argument("--fp16", type=util.str2bool, default=False)
+    parser.add_argument("--update_K_module", type=util.str2bool, default=False)
     parser.add_argument('--fp16_opt_level', type=str, default='O1',
                         help="For fp16: Apex AMP optimization level selected in ['O0', 'O1', 'O2', and 'O3']."
                              "See details at https://nvidia.github.io/apex/amp.html")
 
+    # parser.add_argument("--use_entity", type=utils.str2bool, default=False)
+    # parser.add_argument('--negative_sample', type=int, default=45000, help='how many negative samples to select')
+
     args = parser.parse_args()
     logging.info(args)
     return args
+
+
+if __name__ == "__main__":
+    args = parse_args()

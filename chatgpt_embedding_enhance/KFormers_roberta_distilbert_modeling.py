@@ -107,7 +107,7 @@ class KFormersLayer(nn.Module):
 
 
 class KFormersEncoder(nn.Module):
-    def __init__(self, config, config_k, backbone_knowledge_dict):
+    def __init__(self, config, backbone_knowledge_dict):
         super(KFormersEncoder, self).__init__()
         self.num_hidden_layers = config.num_hidden_layers
 
@@ -119,10 +119,7 @@ class KFormersEncoder(nn.Module):
                 module_list.append(KFormersLayer(config=config, config_k=None))
         self.layer = nn.ModuleList(module_list)
 
-    def forward(self, word_hidden_states, attention_mask,
-                entity_hidden_states, entity_attention_mask,
-                k_entity_hidden_states=None,
-                k_des_hidden_states=None, k_des_attention_mask=None, k_des_mask=None, ):
+    def forward(self, word_hidden_states, attention_mask, des_embed):
 
         last_des_hidden_states = k_des_hidden_states  # batch des_num L d1
         last_des_to_backbone = None
@@ -131,11 +128,7 @@ class KFormersEncoder(nn.Module):
             # [2, 3] = des_vec and mapped des_vec # batch des_num 1024
             # [-1]: entity_vec
             layer_outputs = layer_module(word_hidden_states, attention_mask,
-                                         entity_hidden_states, entity_attention_mask,
-                                         k_entity_hidden_states=k_entity_hidden_states,
-                                         k_des_hidden_states=k_des_hidden_states,
-                                         k_des_attention_mask=k_des_attention_mask,
-                                         k_des_mask=k_des_mask)
+                                         des_embed)
             word_hidden_states = layer_outputs[0]
             k_entity_hidden_states = layer_outputs[1]
             k_des_hidden_states = layer_outputs[2] if layer_outputs[2] is not None else last_des_hidden_states
@@ -151,20 +144,13 @@ class KFormersEncoder(nn.Module):
 
 
 class KFormersModel(BackboneModel):
-    def __init__(self, config, config_k, backbone_knowledge_dict):
+    def __init__(self, config, backbone_knowledge_dict):
         super(KFormersModel, self).__init__(config)
         self.config = config
-        self.config_k = config_k
         self.embeddings = BackboneEmbeddings(config)  # roberta
         self.embeddings.token_type_embeddings.requires_grad = False  # why?
-        if config.backbone_model_type == "luke":
-            self.entity_embeddings = EntityEmbeddings(config)  # entity identifier, only LUKE needs
-        self.k_ent_embeddings = KnowledgeEntityEmbeddings(config)  # 50w*256
-        self.k_des_embeddings = KEmbeddings(config_k)  # distilbert-description
+        self.encoder = KFormersEncoder(config, backbone_knowledge_dict)
 
-        self.encoder = KFormersEncoder(config, config_k, backbone_knowledge_dict)
-
-        # self.pooler = BackbonePooler(config)
         self.pooler = None
 
     #
@@ -179,28 +165,16 @@ class KFormersModel(BackboneModel):
 
         return extended_attention_mask
 
-    def forward(self, input_ids=None, attention_mask=None, token_type_ids=None, start_id=None,
-                entity_ids=None, entity_attention_mask=None, entity_segment_ids=None, entity_position_ids=None,
-                k_ent_ids=None, k_label=None,
-                k_des_ids=None, k_des_mask_one=None, k_des_seg=None, k_des_mask=None):
+    def forward(self, input_ids=None, attention_mask=None, token_type_ids=None,
+                start_id=None,
+                des_embedding=None):
 
         word_embeddings = self.embeddings(input_ids, token_type_ids)
-        if self.config.backbone_model_type == "luke":
-            entity_embeddings = self.entity_embeddings(entity_ids, entity_position_ids, entity_segment_ids)
-        else:
-            entity_embeddings = None
-            entity_attention_mask = None
-            attention_mask = attention_mask[:, None, None, :]
-        k_entity_embeddings = self.k_ent_embeddings(k_ent_ids)
-
-        batch, des_num, length = k_des_ids.size()
+        attention_mask = attention_mask[:, None, None, :]
         k_des_embeddings = self.k_des_embeddings(k_des_ids.view(-1, length)).reshape(batch, des_num, length, -1)
 
         encoder_outputs = self.encoder(word_embeddings, attention_mask,
-                                       entity_embeddings, entity_attention_mask,
-                                       k_entity_hidden_states=k_entity_embeddings,
-                                       k_des_hidden_states=k_des_embeddings, k_des_attention_mask=k_des_mask_one,
-                                       k_des_mask=k_des_mask,
+                                       des_embedding=des_embedding
                                        )
         # word_hidden_states, k_entity_hidden_states, last_des_hidden_states, last_des_to_backbone, entity_hidden_states
         original_text_output, k_ent_output, _, mapped_k_des_output, entity_output = encoder_outputs
@@ -363,11 +337,9 @@ class KFormersForRelationClassification(nn.Module):
 
 
 class KFormersForSequenceClassification(nn.Module):
-    def __init__(self, args, config_k, backbone_knowledge_dict):
+    def __init__(self, args, backbone_knowledge_dict):
         super(KFormersForSequenceClassification, self).__init__()
         self.num_labels = args.num_labels
-        self.ent_num = args.max_ent_num
-
         self.alpha = args.alpha
         self.beta = args.beta
 
@@ -377,7 +349,7 @@ class KFormersForSequenceClassification(nn.Module):
 
         self.config = config
 
-        self.kformers = KFormersModel(config, config_k, backbone_knowledge_dict)
+        self.kformers = KFormersModel(config, backbone_knowledge_dict)
 
         self.classifier = RobertaClassificationHead(config)
         self.loss = nn.CrossEntropyLoss(reduction='sum')
@@ -399,27 +371,17 @@ class KFormersForSequenceClassification(nn.Module):
             module.bias.data.zero_()
 
     def forward(self, input_ids=None, attention_mask=None, token_type_ids=None, start_id=None,
-                entity_ids=None, entity_attention_mask=None, entity_segment_ids=None, entity_position_ids=None,
-                k_ent_ids=None, k_label=None,
-                k_des_ids=None, k_des_mask_one=None, k_des_seg=None, k_des_mask=None, labels=None):
+                des_embedding=None,
+                labels=None):
 
         outputs = self.kformers(input_ids=input_ids, attention_mask=attention_mask, token_type_ids=token_type_ids,
                                 start_id=start_id,
-                                entity_ids=entity_ids, entity_attention_mask=entity_attention_mask,
-                                entity_segment_ids=entity_segment_ids, entity_position_ids=entity_position_ids,
-                                k_ent_ids=k_ent_ids, k_label=k_label,
-                                k_des_ids=k_des_ids, k_des_mask_one=k_des_mask_one, k_des_seg=k_des_seg,
-                                k_des_mask=k_des_mask, )
+                                des_embedding=des_embedding,)
 
-        original_text_output, pooled_output, entity_output, k_entity_embeddings, k_ent_output, mapped_k_des_output = outputs  # batch L d
+        # original_text_output, pooled_output, entity_output, k_entity_embeddings, k_ent_output, mapped_k_des_output = outputs  # batch L d
 
         # main loss
-        if entity_output:  # for luke
-            # feature_vector = self.dropout(entity_output[:, 0, :])
-            logits = self.classifier(entity_output)
-        else:
-            # feature_vector = self.dropout(original_text_output)
-            logits = self.classifier(original_text_output)
+        logits = self.classifier(original_text_output)
 
         if labels is None:
             return logits
