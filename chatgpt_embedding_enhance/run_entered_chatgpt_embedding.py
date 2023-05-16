@@ -22,38 +22,8 @@ from data_utils import output_modes, processors, final_metric
 logger = logging.getLogger(__name__)
 
 BACKBONE_MODEL_CLASSES = {
-    # 'bert': (BertConfig, BertForSequenceClassification, BertTokenizerFast),
     'roberta': (RobertaConfig, RobertaForSequenceClassification, RobertaTokenizerFast),
-    'luke': (RobertaConfig, RobertaForSequenceClassification, RobertaTokenizerFast),
 }
-
-
-# def load_kformers_roberta(args, KFormersDownstreamModel):
-#     args.model_config.num_labels = args.num_labels
-#     model_weights_roberta = torch.load('../checkpoints/roberta-large/pytorch_model.bin', map_location=args.device)
-#
-#     kformers_model = KFormersDownstreamModel(args=args, config_k=config_k,
-#                                              backbone_knowledge_dict=args.backbone_knowledge_dict)
-#     kformer_dict = kformers_model.state_dict()  # KFormers的全部参数
-#     news_kformers_state_dict = OrderedDict()
-#
-#     for key, value in model_weights_roberta.items():
-#         key = key.replace('roberta', 'kformers')
-#         if 'embeddings' in key or 'pooler' in key:
-#             news_kformers_state_dict[key] = value
-#         elif 'encoder' in key:
-#             i = key.split('kformers.encoder.layer.')[-1]
-#             i = i.split('.')[0]
-#             i = int(i)
-#             key = key.replace('kformers.encoder.layer.%s' % i, 'kformers.encoder.layer.%s.backbone_layer' % i)
-#             news_kformers_state_dict[key] = value
-#         else:
-#             pass
-#
-#     kformer_dict.update(news_kformers_state_dict)
-#     kformers_model.load_state_dict(state_dict=kformer_dict)
-#
-#     return args, kformers_model
 
 
 def do_train(args, model, train_dataset, val_dataset, test_dataset=None):
@@ -130,11 +100,9 @@ def do_train(args, model, train_dataset, val_dataset, test_dataset=None):
             loss = 0.0
             model.train()
             batch = tuple(t.to(args.device) for t in batch)
-            if args.task_name in ['openentity', 'figer', 'fewrel', 'tacred']:
+            if args.task_name in ['openentity', 'fewrel']:
                 input_ids, input_mask, segment_ids, start_id = batch[0], batch[1], batch[2], batch[3]
-                ent_ids, ent_mask, ent_seg_ids, ent_pos_ids = batch[4], batch[5], batch[6], batch[7]
-                k_ent_ids, k_label = batch[8], batch[9]
-                des_input_ids, des_att_mask_one, des_segment_one, des_mask = batch[10], batch[11], batch[12], batch[13]
+                des_embedding = batch[-2]
                 label = batch[-1]
             elif args.task_name in ['sst2', 'eem']:
                 input_ids, input_mask, segment_ids = batch[0], batch[1], batch[2]
@@ -173,8 +141,8 @@ def do_train(args, model, train_dataset, val_dataset, test_dataset=None):
                 global_step += 1
                 del batch
                 torch.cuda.empty_cache()
-                logger.info('The training time of one batch is {}'.format(time.time() - step_start_time))
-                print('The training time of one batch is {}'.format(time.time() - step_start_time))
+                # logger.info('The training time of one batch is {}'.format(time.time() - step_start_time))
+                # print('The training time of one batch is {}'.format(time.time() - step_start_time))
                 # ============================================== 以下要写到acc里面，要不然会打印很多遍
                 if args.local_rank in [-1, 0] and args.logging_steps > 0 and global_step % args.logging_steps == 0:
                     logger.info("epoch {}, step {}, global_step {}, train_loss: {:.5f}".format(epoch, step + 1, global_step, loss))
@@ -229,14 +197,14 @@ def do_train(args, model, train_dataset, val_dataset, test_dataset=None):
                 best_dev_result = eval_results[final_metric[args.task_name]]
                 logger.info('rank: {}, epoch: {}, global step: {}, dev results: {}**'.format(args.local_rank, epoch,
                                                                                              global_step, eval_results))
-                print('rank: {}, epoch: {}, global step: {}, dev results: {}**'.format(args.local_rank, epoch,
-                                                                                       global_step, eval_results))
+                # print('rank: {}, epoch: {}, global step: {}, dev results: {}**'.format(args.local_rank, epoch,
+                #                                                                        global_step, eval_results))
             else:
                 logger.info(
                     'rank: {} epoch: {}, global step: {}, dev results: {}'.format(args.local_rank, epoch, global_step,
                                                                                   eval_results))
-                print('rank: {} epoch: {}, global step: {}, dev results: {}'.format(args.local_rank, epoch, global_step,
-                                                                                    eval_results))
+                # print('rank: {} epoch: {}, global step: {}, dev results: {}'.format(args.local_rank, epoch, global_step,
+                #                                                                     eval_results))
             if args.save_steps > 0:
                 logging.info('Saving checkpoint...')
                 output_dir = os.path.join(args.output_dir, 'checkpoint-{}-{}'.format(global_step, test_results[
@@ -269,11 +237,9 @@ def do_eval(model, args, val_dataset, global_step):
         model.eval()
         batch = tuple(t.to(args.device) for t in batch)
         with torch.no_grad():
-            if args.task_name in ['openentity', 'figer', 'fewrel', 'tacred']:
+            if args.task_name in ['openentity', 'fewrel']:
                 input_ids, input_mask, segment_ids, start_id = batch[0], batch[1], batch[2], batch[3]
-                ent_ids, ent_mask, ent_seg_ids, ent_pos_ids = batch[4], batch[5], batch[6], batch[7]
-                k_ent_ids, k_label = batch[8], batch[9]
-                des_input_ids, des_att_mask_one, des_segment_one, des_mask = batch[10], batch[11], batch[12], batch[13]
+                des_embedding = batch[-2]
                 label = batch[-1]
             elif args.task_name in ['sst2', 'eem']:
                 input_ids, input_mask, segment_ids = batch[0], batch[1], batch[2]
@@ -293,8 +259,8 @@ def do_eval(model, args, val_dataset, global_step):
                           }
                 step_time_start = time.time()
                 logits = model(**inputs)
-                logger.info('The inferring time of one batch is {}-'.format(time.time() - step_time_start))
-                print('The inferring time of one batch is {}-'.format(time.time() - step_time_start))
+                # logger.info('The inferring time of one batch is {}-'.format(time.time() - step_time_start))
+                # print('The inferring time of one batch is {}-'.format(time.time() - step_time_start))
                 del batch
             if preds is None:
                 preds = logits.detach().cpu().numpy()
@@ -324,14 +290,14 @@ def set_seed(args):
 
 def main():
     args = parse_args()
-    if args.task_name in ['openentity', 'figer']:
-        from KFormers_roberta_distilbert_modeling import KFormersForEntityTyping as KFormersDownstreamModel
-    elif args.task_name in ['tacred', 'fewrel']:
-        from KFormers_roberta_distilbert_modeling import KFormersForRelationClassification as KFormersDownstreamModel
+    if args.task_name in ['openentity']:
+        from chat_enhance_modeling import EntityTyping as KFormersDownstreamModel
+    elif args.task_name in ['fewrel']:
+        from chat_enhance_modeling import RelationClassification as KFormersDownstreamModel
     elif args.task_name in ['sst2']:
         from chat_enhance_modeling import SequenceClassification as KFormersDownstreamModel
-    elif args.task_name in ['eem']:
-        from KFormers_roberta_distilbert_modeling import KFormersForSequencePairClassification as KFormersDownstreamModel
+    # elif args.task_name in ['eem']:
+    #     from chat_enhance_modeling import KFormersForSequencePairClassification as KFormersDownstreamModel
     else:
         KFormersDownstreamModel = None
 
@@ -368,15 +334,17 @@ def main():
         args.backbone_model_type]
 
     backbone_tokenizer = backbone_tokenizer_class.from_pretrained(args.backbone_model_name_or_path)
-    config = backbone_config_class.from_pretrained(args.backbone_model_name_or_path)
-    config.backbone_knowledge_dict = args.backbone_knowledge_dict
-    backbone_model = KFormersDownstreamModel.from_pretrained(args.backbone_model_name_or_path, config=config)
 
     processor = processors[args.task_name]()
     label_list = processor.get_labels()
     num_labels = len(label_list)
     args.num_labels = num_labels
     args.output_mode = output_modes[args.task_name]
+
+    config = backbone_config_class.from_pretrained(args.backbone_model_name_or_path)
+    config.backbone_knowledge_dict = args.backbone_knowledge_dict
+    config.num_labels = num_labels
+    backbone_model = KFormersDownstreamModel.from_pretrained(args.backbone_model_name_or_path, config=config)
 
     if args.local_rank == 0:
         torch.distributed.barrier()  # Make sure only the first process in distributed training will download model & vocab
@@ -394,8 +362,12 @@ def main():
         else:
             test_dataset = load_and_cache_examples(args, processor, backbone_tokenizer,
                                                    dataset_type='test', evaluate=True)
-        val_dataset = load_and_cache_examples(args, processor, backbone_tokenizer,
-                                              dataset_type='dev', evaluate=True)
+        if args.task_name in ['fewrel']:
+            val_dataset = load_and_cache_examples(args, processor, backbone_tokenizer,
+                                                  dataset_type='test', evaluate=True)
+        else:
+            val_dataset = load_and_cache_examples(args, processor, backbone_tokenizer,
+                                                  dataset_type='dev', evaluate=True)
         train_dataset = load_and_cache_examples(args, processor, backbone_tokenizer,
                                                 dataset_type='train', evaluate=False)
 

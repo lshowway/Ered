@@ -13,6 +13,7 @@ from transformers.utils import logging
 # from transformers.configuration_roberta import RobertaConfig
 from transformers.models.roberta.modeling_roberta import RobertaLayer, RobertaEmbeddings, RobertaConfig
 from transformers.models.roberta.modeling_roberta import RobertaAttention, RobertaIntermediate, RobertaOutput
+
 logger = logging.get_logger(__name__)
 
 
@@ -35,13 +36,13 @@ class RobertaLayer(nn.Module):
             self.map = nn.Linear(1536, config.hidden_size, bias=False)
 
     def forward(
-        self, des_embedding,
-        hidden_states,
-        attention_mask=None,
-        head_mask=None,
-        encoder_hidden_states=None,
-        encoder_attention_mask=None,
-        output_attentions=False,
+            self, des_embedding,
+            hidden_states,
+            attention_mask=None,
+            head_mask=None,
+            encoder_hidden_states=None,
+            encoder_attention_mask=None,
+            output_attentions=False,
     ):
         self_attention_outputs = self.attention(
             hidden_states,
@@ -84,7 +85,6 @@ class RobertaLayer(nn.Module):
         return layer_output
 
 
-
 class RobertaEncoder(nn.Module):
     def __init__(self, config):
         super().__init__()
@@ -101,10 +101,10 @@ class RobertaEncoder(nn.Module):
         self.layer = nn.ModuleList(module_list)
 
     def forward(
-        self,
-        hidden_states,
-        attention_mask=None,
-        des_embedding=None,
+            self,
+            hidden_states,
+            attention_mask=None,
+            des_embedding=None,
     ):
         for i, layer_module in enumerate(self.layer):
             # if i in backbone_knowledge_dict:
@@ -113,7 +113,7 @@ class RobertaEncoder(nn.Module):
                 des_embedding,
                 hidden_states,
                 attention_mask,
-                )
+            )
             hidden_states = layer_outputs[0]
 
         return layer_outputs
@@ -177,7 +177,7 @@ class RobertaModel(RobertaPreTrainedModel):
 
         word_embeddings = self.embeddings(input_ids=input_ids, token_type_ids=token_type_ids)
         attention_mask = self._compute_extended_attention_mask(attention_mask)
-        encoder_outputs = self.encoder(word_embeddings, attention_mask,des_embedding=des_embedding) # bld
+        encoder_outputs = self.encoder(word_embeddings, attention_mask, des_embedding=des_embedding)  # bld
         sequence_output = encoder_outputs[0]
         # pooled_output = self.pooler(sequence_output) if self.pooler is not None else None
 
@@ -207,9 +207,8 @@ class RobertaClassificationHead(nn.Module):
         return x
 
 
+# --------------
 class SequenceClassification(RobertaPreTrainedModel):
-    # _keys_to_ignore_on_load_missing = [r"position_ids"]
-
     def __init__(self, config):
         super().__init__(config)
         self.num_labels = config.num_labels
@@ -224,10 +223,10 @@ class SequenceClassification(RobertaPreTrainedModel):
     def forward(self, input_ids=None, attention_mask=None, token_type_ids=None, start_id=None,
                 des_embedding=None,
                 labels=None
-    ):
+                ):
         outputs = self.roberta(
             input_ids=input_ids, attention_mask=attention_mask, token_type_ids=token_type_ids,
-            start_id=start_id,
+            # start_id=start_id,
             des_embedding=des_embedding
         )
         sequence_output = outputs[0]
@@ -240,4 +239,67 @@ class SequenceClassification(RobertaPreTrainedModel):
 
             return logits, main_loss
 
+
+class EntityTyping(RobertaPreTrainedModel):
+    def __init__(self, config):
+        super(EntityTyping, self).__init__(config)
+        self.num_labels = config.num_labels
+
+        self.roberta = RobertaModel(config, add_pooling_layer=False)
+        self.dropout = nn.Dropout(config.hidden_dropout_prob)
+        self.typing = nn.Linear(config.hidden_size, self.num_labels, False)
+        self.loss = nn.BCEWithLogitsLoss(reduction='mean')
+        self.init_weights()
+
+    def forward(self, input_ids, attention_mask=None, token_type_ids=None, start_id=None,
+                des_embedding=None,
+                labels=None):
+        outputs = self.roberta(input_ids, attention_mask, token_type_ids, des_embedding=des_embedding)
+        sequence_output = self.dropout(outputs[0])
+        start_id = start_id.unsqueeze(1)  # batch 1 L
+        entity_vec = torch.bmm(start_id, sequence_output).squeeze(1)
+        logits = self.typing(entity_vec)
+
+        if labels is not None:
+            loss = self.loss(logits.view(-1, self.num_labels), labels.view(-1, self.num_labels))
+            return logits, loss
+        else:
+            return logits
+
+
+class RelationClassification(RobertaPreTrainedModel):
+    def __init__(self, config):
+        super(RelationClassification, self).__init__(config)
+        self.num_labels = config.num_labels
+
+        self.roberta = RobertaModel(config, add_pooling_layer=False)
+        self.dropout = nn.Dropout(config.hidden_dropout_prob)
+        self.relation_classifier = nn.Linear(config.hidden_size * 2, self.num_labels, False)
+        self.loss = nn.CrossEntropyLoss(reduction='mean')
+        self.init_weights()
+
+    def forward(self, input_ids=None, attention_mask=None, token_type_ids=None, start_id=None,
+                des_embedding=None,
+                labels=None):
+
+        outputs = self.roberta(input_ids, attention_mask, token_type_ids, des_embedding=des_embedding)
+        sequence_output = self.dropout(outputs[0])
+
+        if len(start_id.shape) == 3:
+            sub_start_id, obj_start_id = start_id.split(1, dim=1) # split to 2, each is 1
+            sub_start_id = sub_start_id
+            subj_output = torch.bmm(sub_start_id, sequence_output)
+
+            obj_start_id = obj_start_id
+            obj_output = torch.bmm(obj_start_id, sequence_output)
+            entity_vec = torch.cat([subj_output.squeeze(1), obj_output.squeeze(1)], dim=1)
+            logits = self.relation_classifier(entity_vec)
+
+            if labels is not None:
+                loss = self.loss(logits.view(-1, self.num_labels), labels.view(-1).to(torch.long))
+                return logits, loss
+            else:
+                return logits
+        else:
+            raise ValueError("the entity index is wrong")
 

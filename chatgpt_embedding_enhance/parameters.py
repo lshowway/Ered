@@ -46,7 +46,8 @@ def parse_args():
     parser.add_argument("--post_trained_checkpoint_embedding", default="G:\D\MSRA\knowledge_aware\checkpoints\checkpoint-280000", type=str)
     t = dict(zip(range(24), range(24)))
     # parser.add_argument("--backbone_knowledge_dict", default={0: 0, 5: 1, 8: 2, 9: 3, 10: 4, 22: 5}, type=dict)
-    parser.add_argument("--backbone_knowledge_dict", default='{18: 0, 19: 1, 20: 2, 21: 3, 22: 4, 23: 5}', type=str)
+    #parser.add_argument("--backbone_knowledge_dict", default='{18: 0, 19: 1, 20: 2, 21: 3, 22: 4, 23: 5}', type=str)
+    parser.add_argument("--backbone_knowledge_dict", default='{23: -1, 22: -1, 21:-1}', type=str)
     parser.add_argument("--add_knowledge", type=util.str2bool, default=True)
 
     parser.add_argument("--learning_rate", type=float, default=1e-5)

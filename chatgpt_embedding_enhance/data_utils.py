@@ -1,4 +1,6 @@
 import csv
+import time
+
 import numpy as np
 import sys
 from io import open
@@ -11,66 +13,51 @@ from typing import List, TextIO, Dict
 from collections import Counter, OrderedDict, defaultdict, namedtuple
 from tqdm import tqdm
 from multiprocessing.pool import Pool
-from wikipedia2vec.dump_db import DumpDB
+# from wikipedia2vec.dump_db import DumpDB
 from contextlib import closing
 from sklearn.metrics import precision_recall_curve, auc, roc_curve, accuracy_score
 from torch.utils.data import TensorDataset
 
 logger = logging.getLogger(__name__)
 
+
 HEAD_TOKEN = "[HEAD]"
 TAIL_TOKEN = "[TAIL]"
 
 
-def load_and_cache_examples(args, processor, tokenizer, k_tokenizer, dataset_type, evaluate=False):
+def load_and_cache_examples(args, processor, tokenizer, dataset_type, evaluate=False):
     # dataset_type: train, dev, test
     if args.local_rank not in [-1, 0] and not evaluate:
         torch.distributed.barrier()  # Make sure only the first process in distributed training process the dataset, and the others will use the cache
     input_mode = input_modes[args.task_name]
-    output_mode = output_modes[args.task_name]
     # Load data features from cache or dataset file
-    cached_features_file = os.path.join(args.data_dir, 'cached_{}_{}_{}_{}_{}_ent={}_self_des={}_{}_{}'.format(
-        args.model_type, args.qid_file.split('/')[-1], args.backbone_model_type,
+    cached_features_file = os.path.join(args.data_dir, 'cached_{}_{}_{}_des={}.{}'.format(
+        args.qid_file.split('/')[-1], args.backbone_model_type,
         args.task_name,
-        str(args.backbone_seq_length),
-        str(args.max_ent_num),
         str(args.max_des_num),
-        str(args.knowledge_seq_length),
         dataset_type,
     ))
     if os.path.exists(cached_features_file):
-        logger.warning(
-            "===> rank: {}, Loading features from cached file: {}".format(args.local_rank, cached_features_file))
+        logger.warning("===> rank: {}, Loading features from cached file: {}".format(args.local_rank, cached_features_file))
         features = torch.load(cached_features_file)
     else:
-        logger.warning("===> Creating features from dataset file at {}, {}, {}".format(str(args.data_dir), dataset_type,
-                                                                                       cached_features_file))
+        logger.warning("===> Creating features from dataset file at {}, {}".format(cached_features_file, dataset_type))
         if evaluate:
             examples = processor.get_dev_examples(args.data_dir, dataset_type)
         else:
             examples = processor.get_train_examples(args.data_dir, dataset_type)
-        if input_mode == 'sentence_pair':
-            features = convert_examples_to_features_sentence_pair(args, examples, args.entity_vocab,
-                                                                  args.backbone_seq_length, args.knowledge_seq_length,
-                                                                  args.max_ent_num, args.max_des_num, 6,
-                                                                  tokenizer, k_tokenizer, )
-        elif input_mode == 'single_sentence':
-            features = convert_examples_to_features_single_sentence(args, examples, args.entity_vocab,
+        if input_mode == 'single_sentence':
+            features = single_sentence(args, examples, args.backbone_seq_length, args.max_des_num, tokenizer,)
+        elif input_mode == 'sentence_pair':
+            features = sentence_pair(args, examples,args.entity_vocab,
                                                                     args.backbone_seq_length, args.knowledge_seq_length,
-                                                                    args.max_ent_num, args.max_des_num, 2,
-                                                                    tokenizer, k_tokenizer, )
+                                                                    args.max_ent_num, args.max_des_num, 6,
+                                                                    tokenizer,)
+
         elif input_mode == 'entity_sentence':
-            features = convert_examples_to_features_entity_typing(args, examples, args.entity_vocab,
-                                                                  args.backbone_seq_length, args.knowledge_seq_length,
-                                                                  args.max_ent_num, args.max_des_num, 2,
-                                                                  tokenizer, k_tokenizer,
-                                                                  )
+            features = entity_typing(args, examples, args.backbone_seq_length, args.max_des_num, tokenizer)
         elif input_mode == "entity_entity_sentence":
-            features = convert_examples_to_features_relation_classification(args, examples, args.entity_vocab,
-                                                                            args.backbone_seq_length,
-                                                                            args.knowledge_seq_length,
-                                                                            args.max_ent_num, args.max_des_num, 30,
-                                                                            tokenizer, k_tokenizer, )
+            features = relation_classification(args, examples, args.backbone_seq_length, args.max_des_num, tokenizer,)
         else:
             features = None
         if args.local_rank in [-1, 0]:
@@ -84,18 +71,7 @@ def load_and_cache_examples(args, processor, tokenizer, k_tokenizer, dataset_typ
     input_mask = torch.tensor([f.input_mask for f in features], dtype=torch.long)
     segment_ids = torch.tensor([f.segment_ids for f in features], dtype=torch.long)
 
-    ent_ids = torch.tensor([f.ent_ids for f in features], dtype=torch.long)
-    ent_mask = torch.tensor([f.ent_mask for f in features], dtype=torch.long)
-    ent_seg_ids = torch.tensor([f.ent_seg_ids for f in features], dtype=torch.long)
-    ent_pos_ids = torch.tensor([f.ent_pos_ids for f in features], dtype=torch.long)
-
-    k_ent_ids = torch.tensor([f.k_ent_ids for f in features], dtype=torch.long)
-    k_label = torch.tensor([f.k_label for f in features], dtype=torch.long)
-
-    des_input_ids = torch.tensor([f.des_input_ids for f in features], dtype=torch.long)
-    des_att_mask_one = torch.tensor([f.des_att_mask_one for f in features], dtype=torch.long)
-    des_segment_one = torch.tensor([f.des_segment_one for f in features], dtype=torch.long)
-    des_mask = torch.tensor([f.des_mask for f in features], dtype=torch.long)
+    des_embed = torch.tensor([f.des_embedding for f in features], dtype=torch.float)
 
     if args.task_name in ['openentity', 'figer']:
         label_id = torch.tensor([f.label_id for f in features], dtype=torch.float)
@@ -106,70 +82,85 @@ def load_and_cache_examples(args, processor, tokenizer, k_tokenizer, dataset_typ
 
         start_id = torch.tensor([f.start_id for f in features], dtype=torch.float)
         dataset = TensorDataset(input_ids, input_mask, segment_ids, start_id,
-                                ent_ids, ent_mask, ent_seg_ids, ent_pos_ids,
-                                k_ent_ids, k_label,
-                                des_input_ids, des_att_mask_one, des_segment_one, des_mask,
+                                des_embed,
                                 label_id)
     else:
         dataset = TensorDataset(input_ids, input_mask, segment_ids,
-                                ent_ids, ent_mask, ent_seg_ids, ent_pos_ids,
-                                k_ent_ids, k_label,
-                                des_input_ids, des_att_mask_one, des_segment_one, des_mask,
+                                des_embed,
                                 label_id)
 
     return dataset
 
 
-def _tensorize_batch(inputs, padding_value, max_length, neighbour=False):
-    if neighbour:
-        inputs_padded = []
-        for x in inputs:
-            q_des_pad = []
-            for y in x:
-                padding = [padding_value] * (max_length - len(y))
-                y += padding
-                q_des_pad.append(y)
-            t1 = torch.tensor(q_des_pad)
-            inputs_padded.append(t1.unsqueeze(0))
-        t2 = torch.cat(inputs_padded, dim=0)
-        return t2
-    else:
-        inputs_padded = []
-        for x in inputs:
-            padding = [padding_value] * (max_length - len(x))
-            x += padding
-            t1 = torch.tensor(x)
-            inputs_padded.append(t1.unsqueeze(0))
-        t2 = torch.cat(inputs_padded, dim=0)
-        return t2
+def single_sentence(args, examples, origin_seq_length, max_des_num, tokenizer):
+    _, QID_description_dict = load_description(args.qid_file)
+    features = []
+    # examples = examples[:1000]
+    for (ex_index, example) in enumerate(examples):
+        if ex_index % 10000 == 0:
+            logger.info("Writing example %d of %d" % (ex_index, len(examples)))
+        # ==== backbone ====
+        text_a, label = example.text_a, example.label
+        tokens = tokenizer.tokenize(text_a)
+        tokens = [tokenizer.cls_token] + tokens + [tokenizer.sep_token]
+        tokens = tokens[: origin_seq_length]
+        segment_ids = [0] * len(tokens)
+        input_ids = tokenizer.convert_tokens_to_ids(tokens)
+        input_mask = [1] * len(input_ids)
+        # pad
+        padding_length = origin_seq_length - len(input_ids)
+        input_ids = input_ids + ([tokenizer.pad_token_id] * padding_length)
+        input_mask = input_mask + ([0] * padding_length)
+        segment_ids = segment_ids + ([tokenizer.pad_token_type_id] * padding_length)
+        assert len(input_ids) == origin_seq_length
+        assert len(input_mask) == origin_seq_length
+        assert len(segment_ids) == origin_seq_length
+        # description
+        k_ent_qids = [ent[0] for ent in example.entities]
+        k_des = [QID_description_dict[qid] for qid in k_ent_qids if qid in QID_description_dict]
+        k_des = k_des[: max_des_num]
+        if len(k_des) == 0:
+            k_des = [text_a]
+        k_des = ';'.join(k_des)[:2048]
+        # ---------------
+        # chatgpt embedding
+        import openai
+        from key import api_key
+        openai.api_key = api_key
+        while True:
+            try:
+                response = openai.Embedding.create(
+                    model="text-embedding-ada-002",
+                    input=k_des
+                )
+                chat_des_embedding = response['data'][0]['embedding']  # 1536
+                break
+            except:
+                time.sleep(5)
+        # ---------------
+        if ex_index % 60 == 0:
+            logger.info("*** Example ***")
+            logger.info("guid: %s" % (example.guid))
+            # logger.info("tokens: %s" % " ".join([str(x) for x in tokens]))
+            logger.info("description: %s" % k_des)
+        # ==== knowledge ====
+        features.append(
+            InputFeatures(input_ids=input_ids,
+                          input_mask=input_mask,
+                          segment_ids=segment_ids,
+                          label_id=label,
+                        des_embedding=chat_des_embedding,
+                          ))
+
+    return features
 
 
-def _truncate_seq_pair(tokens_a, tokens_b, max_length):
-    """Truncates a sequence pair in place to the maximum length."""
-
-    # This is a simple heuristic which will always truncate the longer sequence
-    # one token at a time. This makes more sense than truncating an equal percent
-    # of tokens from each, since if one sequence is very short then each token
-    # that's truncated likely contains more information than a longer sequence.
-    while True:
-        total_length = len(tokens_a) + len(tokens_b)
-        if total_length <= max_length:
-            break
-        if len(tokens_a) > len(tokens_b):
-            tokens_a.pop()
-        else:
-            tokens_b.pop()
-
-
-def convert_examples_to_features_sentence_pair(args, examples, entity_vocab,
-                                               origin_seq_length, knowledge_seq_length, max_ent_num, max_des_num,
-                                               max_mention_length,
+def sentence_pair(args, examples, entity_vocab,
+                                               origin_seq_length, knowledge_seq_length, max_ent_num, max_des_num, max_mention_length,
                                                tokenizer, k_tokenizer,
                                                ):
     _, QID_description_dict = load_description(args.qid_file)
-
     features = []
-    count = 0
     for (ex_index, example) in enumerate(examples):
         if ex_index % 10000 == 0:
             logger.info("Writing example %d of %d" % (ex_index, len(examples)))
@@ -196,244 +187,51 @@ def convert_examples_to_features_sentence_pair(args, examples, entity_vocab,
         assert len(input_ids) == origin_seq_length
         assert len(input_mask) == origin_seq_length
         assert len(segment_ids) == origin_seq_length
-        # entity identifier
-        # entity_identifier_position_ids = []
-        # for span_name in ([0, start], [start, end]):
-        #     start, end = span_name
-        #     position_ids = list(range(start, end))[:max_mention_length]
-        #     position_ids += [-1] * (max_mention_length - len(position_ids))
-        #     assert len(position_ids) == max_mention_length
-        #     entity_identifier_position_ids.append(position_ids)
 
-        entity_identifier_ids = [1, 0]
-        entity_identifier_attention_mask = [1, 0]
-        entity_identifier_segment_ids = [0, 0]
-        entity_identifier_position_ids = list(range(start, end))[:max_mention_length]
-        entity_identifier_position_ids += [-1] * (max_mention_length - len(entity_identifier_position_ids))
-        entity_identifier_position_ids = [entity_identifier_position_ids, [-1] * max_mention_length]  # ？
-        # 处理knowledge：entity
-        k_ent_ids = [entity_vocab[ent[0]] for ent in example.entities if ent[0] in entity_vocab]
-        k_ent_ids = k_ent_ids[: max_ent_num]
-        k_ent_scores = [0 for ent in example.entities if ent[0] in entity_vocab]
-        k_ent_scores = k_ent_scores[: max_ent_num]
-        if len(k_ent_ids) == 0:
-            k_ent_ids = [entity_vocab[MASK_TOKEN]]
-            k_ent_scores = [5]
-        if max_ent_num - len(k_ent_ids) > 0:
-            k_ent_ids += random.sample(list(range(4, len(entity_vocab))), (max_ent_num - len(k_ent_ids)))
-        k_ent_scores += [-1] * (max_ent_num - len(k_ent_scores))
-        tmp = list(zip(k_ent_ids, k_ent_scores))
-        random.shuffle(tmp)
-        k_ent_ids, k_ent_scores = zip(*tmp)
-        k_ent_ids, k_ent_scores = list(k_ent_ids), list(k_ent_scores)
-        k_label = k_ent_scores.index(max(k_ent_scores))
-        # 处理knowledge：description
-        des_input_ids, des_att_mask_one, des_segment_one = [], [], []
-
-        k_des = [ent[-1] for ent in example.entities]  # self_des
+        # description
+        k_des = [ent[-1] for ent in example.entities] # self_des
         k_des = k_des[: max_des_num]
-
-        des_mask = [1] * len(k_des) + [0] * (max_des_num - len(k_des))
-        k_des = k_des[: max_des_num] + [k_tokenizer.pad_token] * (max_des_num - len(k_des))
-        for x in k_des:
-            x = k_tokenizer.tokenize(x)
-            x = [k_tokenizer.cls_token] + x + [k_tokenizer.sep_token]
-            x = x[: knowledge_seq_length]
-            x_1 = k_tokenizer.convert_tokens_to_ids(x)
-            x_2 = [1] * len(x_1)  # input_mask
-            x_3 = [0] * len(x)  # segment
-            # pad
-            padding_length = knowledge_seq_length - len(x)
-            x_1 = x_1 + ([k_tokenizer.pad_token_id] * padding_length)
-            x_2 = x_2 + ([0] * padding_length)
-            x_3 = x_3 + ([k_tokenizer.pad_token_type_id] * padding_length)
-            assert len(x_1) == knowledge_seq_length
-            assert len(x_2) == knowledge_seq_length
-            assert len(x_3) == knowledge_seq_length
-            des_input_ids.append(x_1)
-            des_att_mask_one.append(x_2)
-            des_segment_one.append(x_3)
-        if ex_index < 5:
+        if len(k_des) == 0:
+            k_des = [query + ' ' + key]
+        k_des = ';'.join(k_des)[:2048]
+        # --------------- chatgpt embedding
+        import openai
+        from key import api_key
+        openai.api_key = api_key
+        response = openai.Embedding.create(
+            model="text-embedding-ada-002",
+            input=k_des
+        )
+        time.sleep(1.5)
+        chat_des_embedding = response['data'][0]['embedding']  # 1536
+        if ex_index % 100 == 0:
             logger.info("*** Example ***")
             logger.info("guid: %s" % (example.guid))
             logger.info("tokens: %s" % " ".join([str(x) for x in tokens]))
-            logger.info("input_ids: %s" % " ".join([str(x) for x in input_ids]))
-            logger.info("input_mask: %s" % " ".join([str(x) for x in input_mask]))
-            logger.info("segment_ids: %s" % " ".join([str(x) for x in segment_ids]))
-            logger.info("label: {}".format(example.label))
-            # logger.info("start_id: {}".format(start_id))
+            logger.info("description: %s" % k_des)
 
-            logger.info("ent_ids: %s" % " ".join([str(x_) for x_ in entity_identifier_ids]))
-            logger.info("ent_mask: %s" % " ".join([str(x_) for x_ in entity_identifier_attention_mask]))
-            logger.info("ent_seg_ids: %s" % " ".join([str(x_) for x_ in entity_identifier_segment_ids]))
-            logger.info("ent_pos_ids: %s" % " ".join([str(x_) for x_ in entity_identifier_position_ids]))
-
-            logger.info("k_ent_ids: %s" % " ".join([str(x_) for x_ in k_ent_ids]))
-            logger.info("k_label: %s" % k_label)
-
-            logger.info("des_input_ids: %s" % " ".join([str(x_) for x_ in des_input_ids]))
-            logger.info("des_att_mask_one: %s" % " ".join([str(x) for x in des_att_mask_one]))
-            logger.info("des_segment_one: %s" % " ".join([str(x) for x in des_segment_one]))
-            logger.info("des_mask: %s" % " ".join([str(x) for x in des_mask]))
         # ==== knowledge ====
         features.append(
             InputFeatures(input_ids=input_ids,
                           input_mask=input_mask,
                           segment_ids=segment_ids,
                           label_id=example.label,
-
-                          ent_ids=entity_identifier_ids,
-                          ent_mask=entity_identifier_attention_mask,
-                          ent_seg_ids=entity_identifier_segment_ids,
-                          ent_pos_ids=entity_identifier_position_ids,
-
-                          k_ent_ids=k_ent_ids,
-                          k_label=k_label,
-
-                          des_input_ids=des_input_ids,
-                          des_att_mask_one=des_att_mask_one,
-                          des_segment_one=des_segment_one,
-                          des_mask=des_mask,  # 表示有几条有效description
+                          des_embedding=chat_des_embedding,
                           ))
     return features
 
 
-def convert_examples_to_features_single_sentence(args, examples, entity_vocab,
-                                                 origin_seq_length, knowledge_seq_length,
-                                                 max_ent_num, max_des_num, max_mention_length,
-                                                 tokenizer, k_tokenizer,
-                                                 ):
+def relation_classification(args, examples, origin_seq_length, max_des_num, tokenizer,):
     _, QID_description_dict = load_description(args.qid_file)
     features = []
-
-    for (ex_index, example) in enumerate(examples):
-        if ex_index % 10000 == 0:
-            logger.info("Writing example %d of %d" % (ex_index, len(examples)))
-        # ==== backbone ====
-        text_a, label = example.text_a, example.label
-        tokens = tokenizer.tokenize(text_a)
-        tokens = [tokenizer.cls_token] + tokens + [tokenizer.sep_token]
-        tokens = tokens[: origin_seq_length]
-        segment_ids = [0] * len(tokens)
-        input_ids = tokenizer.convert_tokens_to_ids(tokens)
-        input_mask = [1] * len(input_ids)
-        # pad
-        padding_length = origin_seq_length - len(input_ids)
-        input_ids = input_ids + ([tokenizer.pad_token_id] * padding_length)
-        input_mask = input_mask + ([0] * padding_length)
-        segment_ids = segment_ids + ([tokenizer.pad_token_type_id] * padding_length)
-        assert len(input_ids) == origin_seq_length
-        assert len(input_mask) == origin_seq_length
-        assert len(segment_ids) == origin_seq_length
-        # entity identifier
-        entity_identifier_ids = [0, 0]  # 单句分类这里如何处理？??????????????????????
-        entity_identifier_segment_ids = [0, 0]
-        entity_identifier_attention_mask = [1, 0]
-        start, end = 0, 1
-        entity_identifier_position_ids = list(range(start, end))[:max_mention_length]
-        entity_identifier_position_ids += [-1] * (max_mention_length - len(entity_identifier_position_ids))
-        entity_identifier_position_ids = [entity_identifier_position_ids, [-1] * max_mention_length]  # ？
-        # 处理knowledge：entity
-        k_ent_ids = [entity_vocab[ent[0]] for ent in example.entities if ent[0] in entity_vocab]
-        k_ent_ids = k_ent_ids[: max_ent_num]
-        k_ent_scores = [ent[-1] for ent in example.entities if ent[0] in entity_vocab]
-        k_ent_scores = k_ent_scores[: max_ent_num]
-        if len(k_ent_ids) == 0:
-            k_ent_ids = [entity_vocab[MASK_TOKEN]]
-            k_ent_scores = [5]
-        k_ent_ids += random.sample(list(range(4, len(entity_vocab))), (max_ent_num - len(k_ent_ids)))
-        k_ent_scores += [-1] * (max_ent_num - len(k_ent_scores))
-        tmp = list(zip(k_ent_ids, k_ent_scores))
-        random.shuffle(tmp)
-        k_ent_ids, k_ent_scores = zip(*tmp)
-        k_ent_ids, k_ent_scores = list(k_ent_ids), list(k_ent_scores)
-        k_label = k_ent_scores.index(max(k_ent_scores))
-
-        # 处理knowledge：description
-        des_input_ids, des_att_mask_one, des_segment_one = [], [], []
-
-        k_ent_qids = [ent[0] for ent in example.entities]
-        k_des = [QID_description_dict[qid] for qid in k_ent_qids if qid in QID_description_dict]
-        k_des = k_des[: max_des_num]
-
-        des_mask = [1] * len(k_des) + [0] * (max_des_num - len(k_des))
-        k_des = k_des[: max_des_num] + [k_tokenizer.pad_token] * (max_des_num - len(k_des))
-        for x in k_des:
-            x = k_tokenizer.tokenize(x)
-            x = [k_tokenizer.cls_token] + x + [k_tokenizer.sep_token]
-            x = x[: knowledge_seq_length]
-            x_1 = k_tokenizer.convert_tokens_to_ids(x)
-            x_2 = [1] * len(x_1)  # input_mask
-            x_3 = [0] * len(x)  # segment
-            # pad
-            padding_length = knowledge_seq_length - len(x)
-            x_1 = x_1 + ([k_tokenizer.pad_token_id] * padding_length)
-            x_2 = x_2 + ([0] * padding_length)
-            x_3 = x_3 + ([k_tokenizer.pad_token_type_id] * padding_length)
-            assert len(x_1) == knowledge_seq_length
-            assert len(x_2) == knowledge_seq_length
-            assert len(x_3) == knowledge_seq_length
-            des_input_ids.append(x_1)
-            des_att_mask_one.append(x_2)
-            des_segment_one.append(x_3)
-        if ex_index < 5:
-            logger.info("*** Example ***")
-            logger.info("guid: %s" % (example.guid))
-            logger.info("tokens: %s" % " ".join([str(x) for x in tokens]))
-            logger.info("input_ids: %s" % " ".join([str(x) for x in input_ids]))
-            logger.info("input_mask: %s" % " ".join([str(x) for x in input_mask]))
-            logger.info("segment_ids: %s" % " ".join([str(x) for x in segment_ids]))
-            logger.info("label: {}".format(label))
-
-            logger.info("ent_ids: %s" % " ".join([str(x_) for x_ in entity_identifier_ids]))
-            logger.info("ent_mask: %s" % " ".join([str(x_) for x_ in entity_identifier_attention_mask]))
-            logger.info("ent_seg_ids: %s" % " ".join([str(x_) for x_ in entity_identifier_segment_ids]))
-            logger.info("ent_pos_ids: %s" % " ".join([str(x_) for x_ in entity_identifier_position_ids]))
-
-            logger.info("k_ent_ids: %s" % " ".join([str(x_) for x_ in k_ent_ids]))
-            logger.info("k_label: %s" % k_label)
-
-            logger.info("des_input_ids: %s" % " ".join([str(x_) for x_ in des_input_ids]))
-            logger.info("des_att_mask_one: %s" % " ".join([str(x) for x in des_att_mask_one]))
-            logger.info("des_segment_one: %s" % " ".join([str(x) for x in des_segment_one]))
-            logger.info("des_mask: %s" % " ".join([str(x) for x in des_mask]))
-        # ==== knowledge ====
-        features.append(
-            InputFeatures(input_ids=input_ids,
-                          input_mask=input_mask,
-                          segment_ids=segment_ids,
-                          label_id=label,
-
-                          ent_ids=entity_identifier_ids,
-                          ent_mask=entity_identifier_attention_mask,
-                          ent_seg_ids=entity_identifier_segment_ids,
-                          ent_pos_ids=entity_identifier_position_ids,
-
-                          k_ent_ids=k_ent_ids,
-                          k_label=k_label,
-
-                          des_input_ids=des_input_ids,
-                          des_att_mask_one=des_att_mask_one,
-                          des_segment_one=des_segment_one,
-                          des_mask=des_mask,  # 表示有几条有效description
-                          ))
-
-    return features
-
-
-def convert_examples_to_features_relation_classification(args, examples, entity_vocab,
-                                                         origin_seq_length, knowledge_seq_length,
-                                                         max_ent_num, max_des_num, max_mention_length,
-                                                         tokenizer, k_tokenizer, ):
-    _, QID_description_dict = load_description(args.qid_file)
-
-    features = []
+    # examples = examples[:5]
     for (ex_index, example) in enumerate(examples):
         if ex_index % 10000 == 0:
             logger.info("Writing example %d of %d" % (ex_index, len(examples)))
         # ==== backbone ====
         text_a = example.text_a
         start_0, end_0, start_1, end_1 = example.text_b
+        # sub, and then obj
         before_sub = text_a[:start_0].strip()
         tokens = [tokenizer.cls_token] + tokenizer.tokenize(before_sub)
         sub_start = len(tokens)
@@ -482,114 +280,48 @@ def convert_examples_to_features_relation_classification(args, examples, entity_
         obj_special_start_id = np.zeros(origin_seq_length)
         subj_special_start_id[sub_start] = 1
         obj_special_start_id[obj_start] = 1
-        # entity identifier
-        entity_identifier_ids = [1, 2]
-        entity_identifier_segment_ids = [0, 0]
-        entity_identifier_attention_mask = [1, 1]
-        entity_identifier_position_ids = []
-        for span_name in ([sub_start, sub_end], [obj_start, obj_end]):
-            start, end = span_name
-            position_ids = list(range(start, end))[:max_mention_length]
-            position_ids += [-1] * (max_mention_length - len(position_ids))
-            assert len(position_ids) == max_mention_length
-            entity_identifier_position_ids.append(position_ids)
-        # 处理knowledge：entity
-        k_ent_ids = [entity_vocab[ent[0]] for ent in example.entities if ent[0] in entity_vocab]
-        k_ent_ids = k_ent_ids[: max_ent_num]
-        k_ent_scores = [ent[-1] for ent in example.entities if ent[0] in entity_vocab]
-        k_ent_scores = k_ent_scores[: max_ent_num]
-        if len(k_ent_ids) == 0:
-            k_ent_ids = [entity_vocab[MASK_TOKEN]]
-            k_ent_scores = [5]
-        k_ent_ids += random.sample(list(range(4, len(entity_vocab))), (max_ent_num - len(k_ent_ids)))
-        k_ent_scores += [-1] * (max_ent_num - len(k_ent_scores))
-        tmp = list(zip(k_ent_ids, k_ent_scores))
-        random.shuffle(tmp)
-        k_ent_ids, k_ent_scores = zip(*tmp)
-        k_ent_ids, k_ent_scores = list(k_ent_ids), list(k_ent_scores)
-        k_label = k_ent_scores.index(max(k_ent_scores))
-        # knowledge：description
-        des_input_ids, des_att_mask_one, des_segment_one = [], [], []
+        # description
         k_ent_qids = [ent[0] for ent in example.entities]
         k_des = [QID_description_dict[qid] for qid in k_ent_qids if qid in QID_description_dict]
         k_des = k_des[: max_des_num]
-
-        des_mask = [1] * len(k_des) + [0] * (max_des_num - len(k_des))
-        k_des = k_des[: max_des_num] + [k_tokenizer.pad_token] * (max_des_num - len(k_des))
-        for x in k_des:
-            x = k_tokenizer.tokenize(x)
-            x = [k_tokenizer.cls_token] + x + [k_tokenizer.sep_token]
-            x = x[: knowledge_seq_length]
-            x_1 = k_tokenizer.convert_tokens_to_ids(x)
-            x_2 = [1] * len(x_1)  # input_mask
-            x_3 = [0] * len(x)  # segment
-            # pad
-            padding_length = knowledge_seq_length - len(x)
-            x_1 = x_1 + ([k_tokenizer.pad_token_id] * padding_length)
-            x_2 = x_2 + ([0] * padding_length)
-            x_3 = x_3 + ([k_tokenizer.pad_token_type_id] * padding_length)
-            assert len(x_1) == knowledge_seq_length
-            assert len(x_2) == knowledge_seq_length
-            assert len(x_3) == knowledge_seq_length
-            des_input_ids.append(x_1)
-            des_att_mask_one.append(x_2)
-            des_segment_one.append(x_3)
-        if ex_index < 5:
+        if len(k_des) == 0:
+            k_des = [text_a]
+        k_des = ';'.join(k_des)[:2048]
+        # --------------- chatgpt embedding --------------
+        import openai
+        from key import api_key
+        openai.api_key = api_key
+        while True:
+            try:
+                response = openai.Embedding.create(
+                    model="text-embedding-ada-002",
+                    input=k_des
+                )
+                chat_des_embedding = response['data'][0]['embedding']  # 1536
+                break
+            except:
+                time.sleep(5)
+        # ==== knowledge ====
+        if ex_index % 100 == 0:
             logger.info("*** Example ***")
             logger.info("guid: %s" % (example.guid))
             logger.info("tokens: %s" % " ".join([str(x) for x in tokens]))
-            logger.info("input_ids: %s" % " ".join([str(x) for x in input_ids]))
-            logger.info("input_mask: %s" % " ".join([str(x) for x in input_mask]))
-            logger.info("segment_ids: %s" % " ".join([str(x) for x in segment_ids]))
-            logger.info("label: {}".format(label_id))
-            logger.info("start_id: {}".format((sub_start, obj_start)))
-
-            logger.info("ent_ids: %s" % " ".join([str(x_) for x_ in entity_identifier_ids]))
-            logger.info("ent_mask: %s" % " ".join([str(x_) for x_ in entity_identifier_attention_mask]))
-            logger.info("ent_seg_ids: %s" % " ".join([str(x_) for x_ in entity_identifier_segment_ids]))
-            logger.info("ent_pos_ids: %s" % " ".join([str(x_) for x_ in entity_identifier_position_ids]))
-
-            logger.info("k_ent_ids: %s" % " ".join([str(x_) for x_ in k_ent_ids]))
-            logger.info("k_label: %s" % k_label)
-
-            logger.info("des_input_ids: %s" % " ".join([str(x_) for x_ in des_input_ids]))
-            logger.info("des_att_mask_one: %s" % " ".join([str(x) for x in des_att_mask_one]))
-            logger.info("des_segment_one: %s" % " ".join([str(x) for x in des_segment_one]))
-            logger.info("des_mask: %s" % " ".join([str(x) for x in des_mask]))
-        # ==== knowledge ====
-
+            logger.info("description: %s" % k_des)
         features.append(
             InputFeatures(input_ids=input_ids,
                           input_mask=input_mask,
                           segment_ids=segment_ids,
                           label_id=example.label,
                           start_id=(subj_special_start_id, obj_special_start_id),
-
-                          ent_ids=entity_identifier_ids,
-                          ent_mask=entity_identifier_attention_mask,
-                          ent_seg_ids=entity_identifier_segment_ids,
-                          ent_pos_ids=entity_identifier_position_ids,
-
-                          k_ent_ids=k_ent_ids,
-                          k_label=k_label,
-
-                          des_input_ids=des_input_ids,
-                          des_att_mask_one=des_att_mask_one,
-                          des_segment_one=des_segment_one,
-                          des_mask=des_mask,  # 表示有几条有效description
+                          des_embedding=chat_des_embedding,
                           ))
-
     return features
 
 
-def convert_examples_to_features_entity_typing(args, examples, entity_vocab,
-                                               origin_seq_length, knowledge_seq_length, max_ent_num, max_des_num,
-                                               max_mention_length,
-                                               tokenizer, k_tokenizer,
-                                               ):
+def entity_typing(args, examples, origin_seq_length, max_des_num, tokenizer):
     _, QID_description_dict = load_description(args.qid_file)
-
     features = []
+    # examples = examples[:5]
     for (ex_index, example) in enumerate(examples):
         if ex_index % 10000 == 0:
             logger.info("Writing example %d of %d" % (ex_index, len(examples)))
@@ -599,8 +331,7 @@ def convert_examples_to_features_entity_typing(args, examples, entity_vocab,
         tokens_0_start = tokenizer.tokenize(sentence[:start])
         tokens_start_end = tokenizer.tokenize(sentence[start:end])
         tokens_end_last = tokenizer.tokenize(sentence[end:])
-        tokens = [tokenizer.cls_token] + tokens_0_start + tokenizer.tokenize(
-            "[ENTITY]") + tokens_start_end + tokenizer.tokenize("[ENTITY]") + tokens_end_last + [tokenizer.sep_token]
+        tokens = [tokenizer.cls_token] + tokens_0_start + tokenizer.tokenize("[ENTITY]") + tokens_start_end + tokenizer.tokenize("[ENTITY]") + tokens_end_last + [tokenizer.sep_token]
         tokens = tokens[: origin_seq_length]
         start = 1 + len(tokens_0_start)
         end = 1 + len(tokens_0_start) + 1 + len(tokens_start_end)
@@ -619,148 +350,59 @@ def convert_examples_to_features_entity_typing(args, examples, entity_vocab,
         label_id = example.label
         start_id = np.zeros(origin_seq_length)
         if start >= origin_seq_length:
-            start = 0  # cls
+            start = 0  # 如果entity被截断了，就使用CLS位代替
         start_id[start] = 1
-
-        # entity identifier
-        entity_identifier_ids = [1, 0]
-        entity_identifier_attention_mask = [1, 0]
-        entity_identifier_segment_ids = [0, 0]
-        entity_identifier_position_ids = list(range(start, end))[:max_mention_length]
-        entity_identifier_position_ids += [-1] * (max_mention_length - end + start)
-        entity_identifier_position_ids = [entity_identifier_position_ids, [-1] * max_mention_length]  # ？
-        # knowledge：entity
-        k_ent_ids = [entity_vocab[ent[0]] for ent in example.entities if ent[0] in entity_vocab]
-        k_ent_ids = k_ent_ids[: max_ent_num]
-        k_ent_scores = [ent[-1] for ent in example.entities if ent[0] in entity_vocab]
-        k_ent_scores = k_ent_scores[: max_ent_num]
-        if len(k_ent_ids) == 0:
-            k_ent_ids = [entity_vocab[MASK_TOKEN]]
-            k_ent_scores = [5]
-        if len(k_ent_ids) < max_ent_num:
-            k_ent_ids += random.sample(list(range(4, len(entity_vocab))), (max_ent_num - len(k_ent_ids)))
-        k_ent_scores += [-1] * (max_ent_num - len(k_ent_scores))
-        tmp = list(zip(k_ent_ids, k_ent_scores))
-        random.shuffle(tmp)
-        k_ent_ids, k_ent_scores = zip(*tmp)
-        k_ent_ids, k_ent_scores = list(k_ent_ids), list(k_ent_scores)
-        k_label = k_ent_scores.index(max(k_ent_scores))
-        # knowledge：description
-        des_input_ids, des_att_mask_one, des_segment_one = [], [], []
-
+        # description
         k_ent_qids = [ent[0] for ent in example.entities]
         k_des = [QID_description_dict[qid] for qid in k_ent_qids if qid in QID_description_dict]
         k_des = k_des[: max_des_num]
+        if len(k_des) == 0:
+            k_des = [sentence]
+        k_des = ';'.join(k_des)[:2048]
+        # ---------------
+        # chatgpt embedding
+        import openai
+        from key import api_key
+        openai.api_key = api_key
+        while True:
+            try:
+                response = openai.Embedding.create(
+                    model="text-embedding-ada-002",
+                    input=k_des
+                )
+                chat_des_embedding = response['data'][0]['embedding']  # 1536
+                break
+            except:
+                time.sleep(5)
 
-        des_mask = [1] * len(k_des) + [0] * (max_des_num - len(k_des))
-        k_des = k_des[: max_des_num] + [k_tokenizer.pad_token] * (max_des_num - len(k_des))
-        for x in k_des:
-            x = k_tokenizer.tokenize(x)
-            x = [k_tokenizer.cls_token] + x + [k_tokenizer.sep_token]
-            x = x[: knowledge_seq_length]
-            x_1 = k_tokenizer.convert_tokens_to_ids(x)
-            x_2 = [1] * len(x_1)  # input_mask
-            x_3 = [0] * len(x)  # segment
-            # pad
-            padding_length = knowledge_seq_length - len(x)
-            x_1 = x_1 + ([k_tokenizer.pad_token_id] * padding_length)
-            x_2 = x_2 + ([0] * padding_length)
-            x_3 = x_3 + ([k_tokenizer.pad_token_type_id] * padding_length)
-            assert len(x_1) == knowledge_seq_length
-            assert len(x_2) == knowledge_seq_length
-            assert len(x_3) == knowledge_seq_length
-            des_input_ids.append(x_1)
-            des_att_mask_one.append(x_2)
-            des_segment_one.append(x_3)
-        if ex_index < 5:
+        if ex_index % 60 == 0:
             logger.info("*** Example ***")
             logger.info("guid: %s" % (example.guid))
-            logger.info("tokens: %s" % " ".join([str(x) for x in tokens]))
-            logger.info("input_ids: %s" % " ".join([str(x) for x in input_ids]))
-            logger.info("input_mask: %s" % " ".join([str(x) for x in input_mask]))
-            logger.info("segment_ids: %s" % " ".join([str(x) for x in segment_ids]))
-            logger.info("label: {}".format(label_id))
-            logger.info("start_id: {}".format(start_id))
+            # logger.info("tokens: %s" % " ".join([str(x) for x in tokens]))
+            logger.info("description: %s" % k_des)
 
-            logger.info("ent_ids: %s" % " ".join([str(x_) for x_ in entity_identifier_ids]))
-            logger.info("ent_mask: %s" % " ".join([str(x_) for x_ in entity_identifier_attention_mask]))
-            logger.info("ent_seg_ids: %s" % " ".join([str(x_) for x_ in entity_identifier_segment_ids]))
-            logger.info("ent_pos_ids: %s" % " ".join([str(x_) for x_ in entity_identifier_position_ids]))
-
-            logger.info("k_ent_ids: %s" % " ".join([str(x_) for x_ in k_ent_ids]))
-            logger.info("k_label: %s" % k_label)
-
-            logger.info("des_input_ids: %s" % " ".join([str(x_) for x_ in des_input_ids]))
-            logger.info("des_att_mask_one: %s" % " ".join([str(x) for x in des_att_mask_one]))
-            logger.info("des_segment_one: %s" % " ".join([str(x) for x in des_segment_one]))
-            logger.info("des_mask: %s" % " ".join([str(x) for x in des_mask]))
-        # ==== knowledge ====
-        if args.task_name in ['tacred']:
-            features.append(
-                InputFeatures(input_ids=input_ids,
-                              input_mask=input_mask,
-                              label_id=label_id,
-                              start_id=start_id,
-
-                              ent_ids=entity_identifier_ids,
-                              ent_mask=entity_identifier_attention_mask,
-                              ent_seg_ids=entity_identifier_segment_ids,
-                              ent_pos_ids=entity_identifier_position_ids,
-
-                              k_ent_ids=k_ent_ids,
-                              k_label=k_label,
-
-                              des_input_ids=des_input_ids,
-                              des_att_mask_one=des_att_mask_one,
-                              des_mask=des_mask,  # description
-                              ))
-        else:
-            features.append(
-                InputFeatures(input_ids=input_ids,
-                              input_mask=input_mask,
-                              segment_ids=segment_ids,
-                              label_id=label_id,
-                              start_id=start_id,
-
-                              ent_ids=entity_identifier_ids,
-                              ent_mask=entity_identifier_attention_mask,
-                              ent_seg_ids=entity_identifier_segment_ids,
-                              ent_pos_ids=entity_identifier_position_ids,
-
-                              k_ent_ids=k_ent_ids,
-                              k_label=k_label,
-
-                              des_input_ids=des_input_ids,
-                              des_att_mask_one=des_att_mask_one,
-                              des_segment_one=des_segment_one,
-                              des_mask=des_mask,  # description
-                              ))
+        features.append(
+            InputFeatures(input_ids=input_ids,
+                          input_mask=input_mask,
+                          segment_ids=segment_ids,
+                          label_id=label_id,
+                          start_id=start_id,
+                          des_embedding=chat_des_embedding,
+                          ))
     return features
 
 
 class InputFeatures(object):
     def __init__(self, input_ids=None, input_mask=None, segment_ids=None, start_id=None, label_id=None,
-                 ent_ids=None, ent_mask=None, ent_seg_ids=None, ent_pos_ids=None,
-                 k_ent_ids=None, k_label=None,
-                 des_input_ids=None, des_att_mask_one=None, des_segment_one=None, des_mask=None):
+                 des_embedding=None):
+
         self.input_ids = input_ids
         self.input_mask = input_mask
         self.segment_ids = segment_ids
         self.start_id = start_id
         self.label_id = label_id
 
-        self.ent_ids = ent_ids
-        self.ent_mask = ent_mask
-        self.ent_seg_ids = ent_seg_ids
-        self.ent_pos_ids = ent_pos_ids
-
-        self.k_ent_ids = k_ent_ids
-        self.k_label = k_label
-
-        self.des_input_ids = des_input_ids
-        self.des_att_mask_one = des_att_mask_one
-        self.des_segment_one = des_segment_one
-        self.des_mask = des_mask
+        self.des_embedding = des_embedding
 
 
 class InputExample(object):
@@ -835,6 +477,7 @@ class OpenentityProcessor(DataProcessor):
 
 class FigerProcessor(DataProcessor):
 
+
     def get_train_examples(self, data_dir, dataset_type=None):
         lines = self._read_json(os.path.join(data_dir, "train.json"))
         return self._create_examples(lines)
@@ -895,20 +538,18 @@ class FigerProcessor(DataProcessor):
         return examples
 
 
-TACRED_relations = ['per:siblings', 'per:parents', 'org:member_of', 'per:origin', 'per:alternate_names',
-                    'per:date_of_death',
-                    'per:title', 'org:alternate_names', 'per:countries_of_residence',
-                    'org:stateorprovince_of_headquarters',
-                    'per:city_of_death', 'per:schools_attended', 'per:employee_of', 'org:members', 'org:dissolved',
-                    'per:date_of_birth', 'org:number_of_employees/members', 'org:founded', 'org:founded_by',
-                    'org:political/religious_affiliation', 'org:website', 'org:top_members/employees', 'per:children',
-                    'per:cities_of_residence', 'per:cause_of_death', 'org:shareholders', 'per:age', 'per:religion',
-                    'NA',
-                    'org:parents', 'org:subsidiaries', 'per:country_of_birth', 'per:stateorprovince_of_death',
-                    'per:city_of_birth',
-                    'per:stateorprovinces_of_residence', 'org:country_of_headquarters', 'per:other_family',
-                    'per:stateorprovince_of_birth',
-                    'per:country_of_death', 'per:charges', 'org:city_of_headquarters', 'per:spouse']
+TACRED_relations = ['per:siblings', 'per:parents', 'org:member_of', 'per:origin', 'per:alternate_names', 'per:date_of_death',
+             'per:title', 'org:alternate_names', 'per:countries_of_residence', 'org:stateorprovince_of_headquarters',
+             'per:city_of_death', 'per:schools_attended', 'per:employee_of', 'org:members', 'org:dissolved',
+             'per:date_of_birth', 'org:number_of_employees/members', 'org:founded', 'org:founded_by',
+             'org:political/religious_affiliation', 'org:website', 'org:top_members/employees', 'per:children',
+             'per:cities_of_residence', 'per:cause_of_death', 'org:shareholders', 'per:age', 'per:religion',
+             'NA',
+             'org:parents', 'org:subsidiaries', 'per:country_of_birth', 'per:stateorprovince_of_death',
+             'per:city_of_birth',
+             'per:stateorprovinces_of_residence', 'org:country_of_headquarters', 'per:other_family',
+             'per:stateorprovince_of_birth',
+             'per:country_of_death', 'per:charges', 'org:city_of_headquarters', 'per:spouse']
 
 
 class TACREDProcessor(DataProcessor):
@@ -966,17 +607,12 @@ class FewrelProcessor(DataProcessor):
             self._read_json(os.path.join(data_dir, "{}.json".format(dataset_type))), "{}".format(dataset_type))
 
     def get_labels(self):
-        labels = ['P22', 'P449', 'P137', 'P57', 'P750', 'P102', 'P127', 'P1346', 'P410', 'P156', 'P26', 'P674', 'P306',
-                  'P931',
-                  'P1435', 'P495', 'P460', 'P1411', 'P1001', 'P6', 'P413', 'P178', 'P118', 'P276', 'P361', 'P710',
-                  'P155',
-                  'P740', 'P31', 'P1303', 'P136', 'P974', 'P407', 'P40', 'P39', 'P175', 'P463', 'P527', 'P17', 'P101',
-                  'P800',
-                  'P3373', 'P2094', 'P135', 'P58', 'P206', 'P1344', 'P27', 'P105', 'P25', 'P1408', 'P3450', 'P84',
-                  'P991',
-                  'P1877', 'P106', 'P264', 'P355', 'P937', 'P400', 'P177', 'P140', 'P1923', 'P706', 'P123', 'P131',
-                  'P159',
-                  'P641', 'P412', 'P403', 'P921', 'P176', 'P59', 'P466', 'P241', 'P150', 'P86', 'P4552', 'P551', 'P364']
+        labels = ['P22', 'P449', 'P137', 'P57', 'P750', 'P102', 'P127', 'P1346', 'P410', 'P156', 'P26', 'P674', 'P306', 'P931',
+         'P1435', 'P495', 'P460', 'P1411', 'P1001', 'P6', 'P413', 'P178', 'P118', 'P276', 'P361', 'P710', 'P155',
+         'P740', 'P31', 'P1303', 'P136', 'P974', 'P407', 'P40', 'P39', 'P175', 'P463', 'P527', 'P17', 'P101', 'P800',
+         'P3373', 'P2094', 'P135', 'P58', 'P206', 'P1344', 'P27', 'P105', 'P25', 'P1408', 'P3450', 'P84', 'P991',
+         'P1877', 'P106', 'P264', 'P355', 'P937', 'P400', 'P177', 'P140', 'P1923', 'P706', 'P123', 'P131', 'P159',
+         'P641', 'P412', 'P403', 'P921', 'P176', 'P59', 'P466', 'P241', 'P150', 'P86', 'P4552', 'P551', 'P364']
         return labels
 
     def _create_examples(self, lines, dataset_type):
@@ -989,7 +625,7 @@ class FewrelProcessor(DataProcessor):
                 if x[1] == 1:
                     x[1] = 0
             text_a = line['text']
-            text_b = (line['ents'][0][1], line['ents'][0][2], line['ents'][1][1], line['ents'][1][2])
+            text_b = (line['ents'][0][1], line['ents'][0][2], line['ents'][1][1],  line['ents'][1][2])
             neighbour = line['ents']
             label = line['label']
             label = label_map[label]
@@ -1111,6 +747,7 @@ final_metric = {
 
 }
 
+
 Entity = namedtuple("Entity", ["title", "language"])
 PAD_TOKEN = "[PAD]"
 UNK_TOKEN = "[UNK]"
@@ -1120,135 +757,178 @@ HEAD_TOKEN = "[HEAD]"
 TAIL_TOKEN = "[TAIL]"
 
 
-class EntityVocab(object):
-    def __init__(self, vocab_file: str):
-        self._vocab_file = vocab_file
+# class EntityVocab(object):
+#     def __init__(self, vocab_file: str):
+#         self._vocab_file = vocab_file
+#
+#         self.vocab: Dict[Entity, int] = {}
+#         self.counter: Dict[Entity, int] = {}
+#         self.inv_vocab: Dict[int, List[Entity]] = defaultdict(list)
+#
+#         # allow tsv files for backward compatibility
+#         if vocab_file.endswith(".tsv"):
+#             self._parse_tsv_vocab_file(vocab_file)
+#         else:
+#             self._parse_jsonl_vocab_file(vocab_file)
+#
+#     def _parse_tsv_vocab_file(self, vocab_file: str):
+#         with open(vocab_file, "r", encoding="utf-8") as f:
+#             for (index, line) in enumerate(f):
+#                 title, count = line.rstrip().split("\t")
+#                 entity = Entity(title, None)
+#                 self.vocab[entity] = index
+#                 self.counter[entity] = int(count)
+#                 self.inv_vocab[index] = [entity]
+#
+#     def _parse_jsonl_vocab_file(self, vocab_file: str):
+#         with open(vocab_file, "r") as f:
+#             entities_json = [json.loads(line) for line in f]
+#
+#         for item in entities_json:
+#             for title, language in item["entities"]:
+#                 entity = Entity(title, language)
+#                 self.vocab[entity] = item["id"]
+#                 self.counter[entity] = item["count"]
+#                 self.inv_vocab[item["id"]].append(entity)
+#
+#     @property
+#     def size(self) -> int:
+#         return len(self)
+#
+#     def __reduce__(self):
+#         return (self.__class__, (self._vocab_file,))
+#
+#     def __len__(self):
+#         return len(self.inv_vocab)
+#
+#     def __contains__(self, item: str):
+#         return self.contains(item, language=None)
+#
+#     def __getitem__(self, key: str):
+#         return self.get_id(key, language=None)
+#
+#     def __iter__(self):
+#         return iter(self.vocab)
+#
+#     def contains(self, title: str, language: str = None):
+#         return Entity(title, language) in self.vocab
+#
+#     def get_id(self, title: str, language: str = None, default: int = None) -> int:
+#         try:
+#             return self.vocab[Entity(title, language)]
+#         except KeyError:
+#             return default
+#
+#     def get_title_by_id(self, id_: int, language: str = None) -> str:
+#         for entity in self.inv_vocab[id_]:
+#             if entity.language == language:
+#                 return entity.title
+#
+#     def get_count_by_title(self, title: str, language: str = None) -> int:
+#         entity = Entity(title, language)
+#         return self.counter.get(entity, 0)
+#
+#     def save(self, out_file: str):
+#         with open(out_file, "w") as f:
+#             for ent_id, entities in self.inv_vocab.items():
+#                 count = self.counter[entities[0]]
+#                 item = {"id": ent_id, "entities": [(e.title, e.language) for e in entities], "count": count}
+#                 json.dump(item, f)
+#                 f.write("\n")
+#
+#     @staticmethod
+#     def build(
+#         dump_db: DumpDB,
+#         out_file: str,
+#         vocab_size: int,
+#         white_list: List[str],
+#         white_list_only: bool,
+#         pool_size: int,
+#         chunk_size: int,
+#         language: str,
+#     ):
+#         counter = Counter()
+#         with tqdm(total=dump_db.page_size(), mininterval=0.5) as pbar:
+#             with closing(Pool(pool_size, initializer=EntityVocab._initialize_worker, initargs=(dump_db,))) as pool:
+#                 for ret in pool.imap_unordered(EntityVocab._count_entities, dump_db.titles(), chunksize=chunk_size):
+#                     counter.update(ret)
+#                     pbar.update()
+#
+#         title_dict = OrderedDict()
+#         title_dict[PAD_TOKEN] = 0
+#         title_dict[UNK_TOKEN] = 0
+#         title_dict[MASK_TOKEN] = 0
+#
+#         for title in white_list:
+#             if counter[title] != 0:
+#                 title_dict[title] = counter[title]
+#
+#         if not white_list_only:
+#             valid_titles = frozenset(dump_db.titles())
+#             for title, count in counter.most_common():
+#                 if title in valid_titles and not title.startswith("Category:"):
+#                     title_dict[title] = count
+#                     if len(title_dict) == vocab_size:
+#                         break
+#
+#         with open(out_file, "w") as f:
+#             for ent_id, (title, count) in enumerate(title_dict.items()):
+#                 json.dump({"id": ent_id, "entities": [[title, language]], "count": count}, f)
+#                 f.write("\n")
+#
+#     @staticmethod
+#     def _initialize_worker(dump_db: DumpDB):
+#         global _dump_db
+#         _dump_db = dump_db
+#
+#     @staticmethod
+#     def _count_entities(title: str) -> Dict[str, int]:
+#         counter = Counter()
+#         for paragraph in _dump_db.get_paragraphs(title):
+#             for wiki_link in paragraph.wiki_links:
+#                 title = _dump_db.resolve_redirect(wiki_link.title)
+#                 counter[title] += 1
+#         return counter
 
-        self.vocab: Dict[Entity, int] = {}
-        self.counter: Dict[Entity, int] = {}
-        self.inv_vocab: Dict[int, List[Entity]] = defaultdict(list)
 
-        # allow tsv files for backward compatibility
-        if vocab_file.endswith(".tsv"):
-            self._parse_tsv_vocab_file(vocab_file)
+def _tensorize_batch(inputs, padding_value, max_length, neighbour=False):
+    if neighbour:
+        inputs_padded = []
+        for x in inputs:
+            q_des_pad = []
+            for y in x:
+                padding = [padding_value] * (max_length - len(y))
+                y += padding
+                q_des_pad.append(y)
+            t1 = torch.tensor(q_des_pad)
+            # print(t1.size(), x)
+            inputs_padded.append(t1.unsqueeze(0))
+        t2 = torch.cat(inputs_padded, dim=0)
+        return t2
+    else:
+        inputs_padded = []
+        for x in inputs:
+            padding = [padding_value] * (max_length - len(x))
+            x += padding
+            t1 = torch.tensor(x)
+            inputs_padded.append(t1.unsqueeze(0))
+        t2 = torch.cat(inputs_padded, dim=0)
+        return t2
+
+
+def _truncate_seq_pair(tokens_a, tokens_b, max_length):
+    """Truncates a sequence pair in place to the maximum length."""
+
+    # This is a simple heuristic which will always truncate the longer sequence
+    # one token at a time. This makes more sense than truncating an equal percent
+    # of tokens from each, since if one sequence is very short then each token
+    # that's truncated likely contains more information than a longer sequence.
+    while True:
+        total_length = len(tokens_a) + len(tokens_b)
+        if total_length <= max_length:
+            break
+        if len(tokens_a) > len(tokens_b):
+            tokens_a.pop()
         else:
-            self._parse_jsonl_vocab_file(vocab_file)
+            tokens_b.pop()
 
-    def _parse_tsv_vocab_file(self, vocab_file: str):
-        with open(vocab_file, "r", encoding="utf-8") as f:
-            for (index, line) in enumerate(f):
-                title, count = line.rstrip().split("\t")
-                entity = Entity(title, None)
-                self.vocab[entity] = index
-                self.counter[entity] = int(count)
-                self.inv_vocab[index] = [entity]
-
-    def _parse_jsonl_vocab_file(self, vocab_file: str):
-        with open(vocab_file, "r") as f:
-            entities_json = [json.loads(line) for line in f]
-
-        for item in entities_json:
-            for title, language in item["entities"]:
-                entity = Entity(title, language)
-                self.vocab[entity] = item["id"]
-                self.counter[entity] = item["count"]
-                self.inv_vocab[item["id"]].append(entity)
-
-    @property
-    def size(self) -> int:
-        return len(self)
-
-    def __reduce__(self):
-        return (self.__class__, (self._vocab_file,))
-
-    def __len__(self):
-        return len(self.inv_vocab)
-
-    def __contains__(self, item: str):
-        return self.contains(item, language=None)
-
-    def __getitem__(self, key: str):
-        return self.get_id(key, language=None)
-
-    def __iter__(self):
-        return iter(self.vocab)
-
-    def contains(self, title: str, language: str = None):
-        return Entity(title, language) in self.vocab
-
-    def get_id(self, title: str, language: str = None, default: int = None) -> int:
-        try:
-            return self.vocab[Entity(title, language)]
-        except KeyError:
-            return default
-
-    def get_title_by_id(self, id_: int, language: str = None) -> str:
-        for entity in self.inv_vocab[id_]:
-            if entity.language == language:
-                return entity.title
-
-    def get_count_by_title(self, title: str, language: str = None) -> int:
-        entity = Entity(title, language)
-        return self.counter.get(entity, 0)
-
-    def save(self, out_file: str):
-        with open(out_file, "w") as f:
-            for ent_id, entities in self.inv_vocab.items():
-                count = self.counter[entities[0]]
-                item = {"id": ent_id, "entities": [(e.title, e.language) for e in entities], "count": count}
-                json.dump(item, f)
-                f.write("\n")
-
-    @staticmethod
-    def build(
-            dump_db: DumpDB,
-            out_file: str,
-            vocab_size: int,
-            white_list: List[str],
-            white_list_only: bool,
-            pool_size: int,
-            chunk_size: int,
-            language: str,
-    ):
-        counter = Counter()
-        with tqdm(total=dump_db.page_size(), mininterval=0.5) as pbar:
-            with closing(Pool(pool_size, initializer=EntityVocab._initialize_worker, initargs=(dump_db,))) as pool:
-                for ret in pool.imap_unordered(EntityVocab._count_entities, dump_db.titles(), chunksize=chunk_size):
-                    counter.update(ret)
-                    pbar.update()
-
-        title_dict = OrderedDict()
-        title_dict[PAD_TOKEN] = 0
-        title_dict[UNK_TOKEN] = 0
-        title_dict[MASK_TOKEN] = 0
-
-        for title in white_list:
-            if counter[title] != 0:
-                title_dict[title] = counter[title]
-
-        if not white_list_only:
-            valid_titles = frozenset(dump_db.titles())
-            for title, count in counter.most_common():
-                if title in valid_titles and not title.startswith("Category:"):
-                    title_dict[title] = count
-                    if len(title_dict) == vocab_size:
-                        break
-
-        with open(out_file, "w") as f:
-            for ent_id, (title, count) in enumerate(title_dict.items()):
-                json.dump({"id": ent_id, "entities": [[title, language]], "count": count}, f)
-                f.write("\n")
-
-    @staticmethod
-    def _initialize_worker(dump_db: DumpDB):
-        global _dump_db
-        _dump_db = dump_db
-
-    @staticmethod
-    def _count_entities(title: str) -> Dict[str, int]:
-        counter = Counter()
-        for paragraph in _dump_db.get_paragraphs(title):
-            for wiki_link in paragraph.wiki_links:
-                title = _dump_db.resolve_redirect(wiki_link.title)
-                counter[title] += 1
-        return counter
